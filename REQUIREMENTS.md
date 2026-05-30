@@ -79,16 +79,16 @@ is aspirational; significant gaps remain).
 
 | Item | Status |
 |---|---|
-| `kspaceFirstOrder1D` | ✅ Implemented (linear, lossless, homogeneous; mirrors 2D/3D) |
-| Heterogeneous media in solver | Hardcoded `precondition(medium.isHomogeneous)` in 1D/2D/3D |
+| `kspaceFirstOrder1D` | ✅ Implemented (linear, lossless; mirrors 2D/3D) |
+| Heterogeneous media in solver | ✅ Implemented (spatially varying c0/rho0 in 1D/2D/3D; staggered density, `c_ref=max(c0)`) |
 | `resize` (interpolated resizing) | ✅ Implemented (`Grid/GridUtils.swift`, separable linear interp 1D/2D/3D) |
 | `getOptimalPMLSize` | ✅ Implemented (`PML/PML.swift`, prime-factor heuristic, returns `[Int]` per dim) |
 | `interpCartData`, `fourierShift`, `findClosest`, `offGridPoints` | Not implemented |
 | `SimulationOptions.progress` callback | ✅ Added; fires once per step in all solvers |
-| `SimulationOptions.smoothC0`, `smoothRho0` | ✅ Fields added (functional once heterogeneous media lands) |
+| `SimulationOptions.smoothC0`, `smoothRho0` | ✅ Implemented and wired (smooth spatially varying c0/rho0 when set) |
 
 **Solver limitations (2D and 3D):**
-- Linear, lossless, **homogeneous** only (precondition crashes on heterogeneous input)
+- Linear and lossless (homogeneous or spatially varying sound speed / density)
 - `SimulationOutput` only returns `p` (time series) and `pFinal`; all other `RecordField` cases
   (pMax, pMin, pRms, ux, uy, uz, uMax, uRms, uFinal, iAvg, iMax) are **not recorded**
 - Sensor directivity not implemented
@@ -96,10 +96,9 @@ is aspirational; significant gaps remain).
 - Absorption (power-law) not implemented
 - Nonlinear propagation (B/A) not implemented
 
-### Phase 2 — Full Fluid Solver ❌ (not started)
+### Phase 2 — Full Fluid Solver 🚧 (in progress)
 
-All of Phase 2 remains unimplemented:
-- Heterogeneous media support in solver
+- ✅ Heterogeneous media support in solver (spatially varying c0/rho0, 1D/2D/3D)
 - Power-law absorption and dispersion
 - Nonlinear propagation
 - Time-reversal reconstruction
@@ -139,11 +138,33 @@ All of Phase 3 is unimplemented. Missing files and their target locations:
 
 ### Reference implementation
 
-The Julia port (`k-wave-julia/KWave.jl/`) is the direct source reference for all missing
-modules. Each Julia file maps 1:1 to a Swift target file. When implementing a missing module:
-1. Read the corresponding Julia source in `/Users/jingo/Work/Attune/k-wave-julia/KWave.jl/src/`
-2. Port to Swift using `MLXArray` in place of Julia arrays
-3. Follow the existing Swift patterns (value types, `MLXArray` for all numeric fields)
+**The k-wave-python source (`/Users/jingo/Work/Attune/k-wave-python/`) is the direct source
+reference for all modules.** It is the most mature port (matches the MATLAB original closely),
+the project ships a working install in `.venv-kwave/`, and its pure-NumPy solver
+(`kwave/solvers/kspace_solver.py`) is the formulation the Swift solver mirrors 1:1. (The earlier
+Julia port `k-wave-julia/KWave.jl/` is **no longer a reference** — do not port from it.)
+
+When implementing or validating a module, map the Swift target to its k-wave-python counterpart:
+
+| Swift area | k-wave-python source |
+|---|---|
+| Fluid solver internals (update equations, p0 init, staggered density, source scaling) | `kwave/solvers/kspace_solver.py` |
+| Solver setup (staggered-grid medium, `c_ref`, kappa/PML operators) | `kwave/kspaceFirstOrder{2D,3D,AS}.py`, `kwave/kWaveSimulation*.py` |
+| Grid / wavenumbers / `makeTime` | `kwave/kgrid.py` |
+| Medium / source / sensor | `kwave/kmedium.py`, `kwave/ksource.py`, `kwave/ksensor.py` |
+| Geometry, filters, signals, interp, PML, conversions | `kwave/utils/*.py` (e.g. `mapgen.py`, `filters.py`, `interp.py`, `pml.py`) |
+| Reconstruction | `kwave/kspaceLineRecon.py`, `kwave/kspacePlaneRecon.py`, `kwave/reconstruction/` |
+
+Porting steps:
+1. Read the corresponding k-wave-python source above.
+2. Port to Swift using `MLXArray` in place of NumPy arrays.
+3. Follow the existing Swift patterns (value types, `MLXArray` for all numeric fields).
+
+**Parity note (see §9.2):** the C++/OMP engine is the gold standard and homogeneous references use
+it. But the C++ engine and k-wave-python's NumPy solver diverge ~2% in *heterogeneous* media (a C++
+internal detail the NumPy solver doesn't reproduce). Since the Swift solver mirrors the NumPy
+formulation, heterogeneous parity references are generated from the NumPy solver, homogeneous ones
+from C++. See `Scripts/parity/generate_reference_hetero.py` / `diag_numpy_vs_cpp.py`.
 
 ---
 
@@ -217,8 +238,8 @@ absorption for HIFU heating studies.
 ## 3. Data Structures
 
 Swift value types (`struct`) with defaulted stored properties and memberwise/custom inits replace
-MATLAB name-value pairs and Julia `@kwarg` structs. Numeric fields are `MLXArray` (which carries
-its dtype at runtime) or `Double`/`Int` for scalars.
+MATLAB name-value pairs and k-wave-python's dataclass/keyword structs. Numeric fields are
+`MLXArray` (which carries its dtype at runtime) or `Double`/`Int` for scalars.
 
 ### 3.1 `KWaveGrid`
 
@@ -810,7 +831,7 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 
 ### Phase 2: Full Fluid Solver (P0 continued) — ❌ Not started
 
-1. ❌ Heterogeneous media (varying sound speed + density) — remove `precondition(isHomogeneous)`, implement heterogeneous EOS and density splits
+1. ✅ Heterogeneous media (varying sound speed + density) — staggered-density velocity update, `dt·ρ0` density update, `c0²·Σρ` EOS, `c_ref=max(c0)`; verified against k-wave-python's NumPy solver (`ParityTests.test2DHeterogeneousParity`)
 2. ❌ Power-law absorption and dispersion
 3. ❌ Nonlinear propagation (B/A)
 4. ❌ Time-reversal reconstruction (via `sensor.timeReversalBoundaryData`)

@@ -64,4 +64,72 @@ final class ParityTests: XCTestCase {
         XCTAssertLessThan(l2 / refL2, 1e-3)
         XCTAssertLessThan(maxErr / refMax, 1e-3)
     }
+
+    private var heteroRefPath: String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/parity/reference_2d_hetero.h5").path
+    }
+
+    /// Parity against a k-wave-python 2D IVP reference in a *spatially varying* medium (a circular
+    /// inclusion of higher sound speed and density). Exercises the staggered-density velocity
+    /// update, `dt·ρ0` density update, `c0²·Σρ` equation of state, and `c_ref = max(c0)`.
+    ///
+    /// The reference comes from k-wave-python's pure-NumPy solver (`kspace_solver`), not the C++
+    /// engine: in a heterogeneous medium the C++ engine and that NumPy solver diverge ~2% at the
+    /// medium discontinuity (a C++ internal detail the NumPy solver doesn't reproduce). The Swift
+    /// solver is a 1:1 port of the NumPy formulation, so it matches the NumPy field to float32
+    /// precision but inherits the same ~2% offset from C++. Validating against the NumPy reference
+    /// keeps a tight tolerance; see Scripts/parity/generate_reference_hetero.py for the full
+    /// rationale and diag_numpy_vs_cpp.py for the measurement.
+    func test2DHeterogeneousParity() throws {
+        guard FileManager.default.fileExists(atPath: heteroRefPath) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_hetero.py")
+        }
+        let f = try HDF5File(open: heteroRefPath)
+
+        let nx = Int(try f.readFloatDataset("Nx").data[0])
+        let ny = Int(try f.readFloatDataset("Ny").data[0])
+        let dx = Double(try f.readFloatDataset("dx").data[0])
+        let dy = Double(try f.readFloatDataset("dy").data[0])
+        let dt = Double(try f.readFloatDataset("dt").data[0])
+        let nt = Int(try f.readFloatDataset("Nt").data[0])
+        let pmlSize = Int(try f.readFloatDataset("pml_size").data[0])
+
+        let (c0Shape, c0Data) = try f.readFloatDataset("c0")
+        let (rho0Shape, rho0Data) = try f.readFloatDataset("rho0")
+        let (p0Shape, p0Data) = try f.readFloatDataset("p0")
+        let (pfShape, pfData) = try f.readFloatDataset("p_final")
+        XCTAssertEqual(c0Shape, [nx, ny])
+        XCTAssertEqual(rho0Shape, [nx, ny])
+        XCTAssertEqual(p0Shape, [nx, ny])
+        XCTAssertEqual(pfShape, [nx, ny])
+
+        var grid = KWaveGrid(nx: nx, dx: dx, ny: ny, dy: dy)
+        grid.setTime(nt: nt, dt: dt)
+
+        let medium = KWaveMedium(soundSpeed: MLXArray(c0Data).reshaped([nx, ny]),
+                                 density: MLXArray(rho0Data).reshaped([nx, ny]))
+        var source = KWaveSource()
+        source.p0 = MLXArray(p0Data).reshaped([nx, ny])
+        var options = SimulationOptions()
+        options.pmlSize = .uniform(pmlSize)
+
+        let out = kspaceFirstOrder(grid: grid, medium: medium, source: source,
+                                   sensor: KWaveSensor(), options: options)
+        let mine = out.pFinal!
+        let ref = MLXArray(pfData).reshaped([nx, ny])
+
+        let diff = MLX.abs(mine - ref)
+        let maxErr = MLX.max(diff).item(Float.self)
+        let refMax = MLX.max(MLX.abs(ref)).item(Float.self)
+        let l2 = sqrt(MLX.sum(diff * diff).item(Float.self) / Float(nx * ny))
+        let refL2 = sqrt(MLX.sum(ref * ref).item(Float.self) / Float(nx * ny))
+
+        // Swift mirrors the NumPy solver's update equations exactly, so the full 363-step run
+        // matches to float32 precision (≈1e-5 relative). Tolerances sit an order of magnitude above.
+        XCTAssertEqual(grid.nt, nt)
+        XCTAssertLessThan(l2 / refL2, 1e-4)
+        XCTAssertLessThan(maxErr / refMax, 1e-4)
+    }
 }

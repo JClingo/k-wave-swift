@@ -46,6 +46,107 @@ This precision policy is part of the acceptance criteria (§13).
 
 ---
 
+## 1.2 Current Implementation Status (as of 2026-05-29)
+
+This section is the ground-truth status map for agents continuing this project. It reflects the
+actual code in `Sources/KWave/`, not the commit message ("Initial pass at 1-to-1 feature parity"
+is aspirational; significant gaps remain).
+
+### Phase 1 — Foundation ✅ (mostly complete)
+
+**Implemented and validated:**
+
+| Component | File | Notes |
+|---|---|---|
+| `KWaveGrid` (1D/2D/3D) | `Grid/KWaveGrid.swift` | `makeTime`, `setTime`, wavenumber grids |
+| `KWaveMedium` | `Medium/KWaveMedium.swift` | HEAD version; see regression warning above |
+| `KWaveSource` | `Source/KWaveSource.swift` | All fields including stress (elastic) |
+| `KWaveSensor` + `RecordField` | `Sensor/KWaveSensor.swift` | All RecordField cases defined |
+| `kspaceFirstOrder2D` | `Solver/KSpaceFirstOrder.swift` | See limitations below |
+| `kspaceFirstOrder3D` | `Solver/KSpaceFirstOrder.swift` | See limitations below |
+| PML (profile + vectorToColumn) | `PML/PML.swift` | |
+| FFT utils + staggered derivative | `FFT/FFTUtils.swift` | `spectralDerivative`, `StaggeredDerivative` |
+| `makeDisc`, `makeCircle` | `Geometry/Shapes.swift` | 2D grid binary masks |
+| `makeBall`, `makeSphere` | `Geometry/Shapes.swift` | 3D grid binary masks |
+| `expandMatrix`, `cart2grid2D`, `grid2cart2D` | `Grid/GridUtils.swift` | |
+| `applyFilter`, `gaussianFilter`, `smooth`, `smooth3D`, `getWin`, `filterTimeSeries` | `Filter/Filters.swift` | getWin: Hann + Blackman only (not Tukey/Nuttall) |
+| `toneBurst`, `gaussian` | `Signal/Generation.swift` | |
+| `db2neper`, `neper2db` | `Material/Conversion.swift` | |
+| HDF5 I/O | `IO/HDF5.swift`, `IO/KWaveInput.swift` | |
+| `getColorMap` | `Viz/ColorMap.swift` | |
+
+**Phase 1 gaps (items in §12 Phase 1 list not yet done):**
+
+| Item | Status |
+|---|---|
+| `kspaceFirstOrder1D` | `fatalError` — **not implemented** |
+| Heterogeneous media in solver | Hardcoded `precondition(medium.isHomogeneous)` in both 2D and 3D |
+| `resize` (interpolated resizing) | Not implemented |
+| `getOptimalPMLSize` | Not implemented |
+| `interpCartData`, `fourierShift`, `findClosest`, `offGridPoints` | Not implemented |
+| `SimulationOptions.progress` callback | Field absent from `SimulationOptions` struct |
+| `SimulationOptions.smoothC0`, `smoothRho0` | Fields absent from `SimulationOptions` |
+
+**Solver limitations (2D and 3D):**
+- Linear, lossless, **homogeneous** only (precondition crashes on heterogeneous input)
+- `SimulationOutput` only returns `p` (time series) and `pFinal`; all other `RecordField` cases
+  (pMax, pMin, pRms, ux, uy, uz, uMax, uRms, uFinal, iAvg, iMax) are **not recorded**
+- Sensor directivity not implemented
+- Time-reversal mode not implemented
+- Absorption (power-law) not implemented
+- Nonlinear propagation (B/A) not implemented
+
+### Phase 2 — Full Fluid Solver ❌ (not started)
+
+All of Phase 2 remains unimplemented:
+- Heterogeneous media support in solver
+- Power-law absorption and dispersion
+- Nonlinear propagation
+- Time-reversal reconstruction
+- All sensor recording fields beyond `p` and `pFinal`
+- Sensor directivity
+- Real-time monitoring UI (Metal)
+- Movie recording (AVFoundation)
+- Full parity test suite
+
+### Phase 3 — Extended Features ❌ (not started)
+
+All of Phase 3 is unimplemented. Missing files and their target locations:
+
+| Missing | Target file | Exports |
+|---|---|---|
+| Cartesian geometry | `Geometry/Cartesian.swift` | `makeCartCircle`, `makeCartSphere`, `makeCartArc`, `makeCartBowl`, `makeCartDisc`, `makeCartRect` |
+| Signal processing | `Signal/Processing.swift` | `addNoise`, `createCWSignals`, `extractAmpPhase`, `logCompression`, `envelopeDetection`, `gradientFD`, `gradientSpect`, `spect` |
+| Material properties | `Material/Properties.swift` | `waterSoundSpeed`, `waterDensity`, `waterAbsorption`, `waterNonlinearity`, `fitPowerLawParams` |
+| KWaveArray | `Array/KWaveArray.swift` | `KWaveArray`, `ArcElement`, `BowlElement`, `DiscElement`, `RectElement`, `SphereElement`, `addArcElement!`, `getElementBinaryMask`, `getDistributedSourceSignal`, `combineSensorData` |
+| KWaveTransducer | `Transducer/KWaveTransducer.swift` | `KWaveTransducer`, `getTransducerBinaryMask`, `getTransducerSource`, `combineTransducerSensorData` |
+| Geometry shapes (grid) | `Geometry/Shapes.swift` (add to existing) | `makeArc`, `makeLine`, `makeBowl`, `makeMultiArc`, `makeMultiBowl`, `makeSphericalSection` |
+| FFT reconstruction | `Reconstruction/FFTRecon.swift` | `kspaceLineRecon`, `kspacePlaneRecon` |
+| Axisymmetric solver | `Solver/Axisymmetric.swift` | `kspaceFirstOrderAS` |
+| CW solver | `Solver/CW.swift` | `acousticFieldPropagator`, `angularSpectrumCW` |
+| Visualization | `Viz/FieldDisplay.swift`, `Viz/Plots.swift` | `SimulationDisplay`, `beamPlot`, `flyThrough`, `overlayPlot`, `stackedPlot` |
+| CLI | `kwave-cli/main.swift` | `kwave-cli run/validate/info` |
+
+### Phase 4 — Advanced Solvers ❌ (not started)
+
+| Missing | Target file | Exports |
+|---|---|---|
+| Elastic wave solver | `Solver/Elastic.swift` | `ElasticMedium`, `ElasticSource`, `pstdElastic2D`, `pstdElastic3D` |
+| Thermal/bioheat solver | `Solver/Diffusion.swift` | `ThermalMedium`, `ThermalSource`, `kwaveDiffusion`, `bioheatExact` |
+| Analytical reference solutions | `Reference/Analytical.swift` | `focusedAnnulusONeil`, `focusedBowlONeil`, `mendousse` |
+| Beamforming reconstruction | `Reconstruction/Beamform.swift` | `beamformDelayAndSum`, `scanConversion` |
+| 3D visualization | `Viz/Voxel.swift` | `voxelPlot`, `isosurfacePlot`, `maxIntensityProjection` |
+
+### Reference implementation
+
+The Julia port (`k-wave-julia/KWave.jl/`) is the direct source reference for all missing
+modules. Each Julia file maps 1:1 to a Swift target file. When implementing a missing module:
+1. Read the corresponding Julia source in `/Users/jingo/Work/Attune/k-wave-julia/KWave.jl/src/`
+2. Port to Swift using `MLXArray` in place of Julia arrays
+3. Follow the existing Swift patterns (value types, `MLXArray` for all numeric fields)
+
+---
+
 ## 2. Core Simulation Engine
 
 ### 2.1 Fluid Simulations (k-space pseudospectral method)
@@ -679,69 +780,75 @@ k-wave-swift/
 
 ## 12. Implementation Phases
 
-### Phase 1: Foundation (P0)
+Status legend: ✅ done · ⚠️ partial · ❌ not started
+
+### Phase 1: Foundation (P0) — ⚠️ Mostly complete
 
 **Goal:** Minimal working 2D simulation with validation.
 
-1. `KWaveGrid` (1D/2D/3D construction + wavenumber grids)
-2. `KWaveMedium`, `KWaveSource`, `KWaveSensor`
-3. FFT layer (`MLXFFT` wrappers) + spectral gradient
-4. PML implementation
-5. `kspaceFirstOrder` for 2D (linear, homogeneous)
-6. Geometry: `makeDisc`, `makeCircle`, `makeBall`, `makeSphere`
-7. Grid utilities: `cart2grid`, `grid2cart`, `expandMatrix`, `resize`, `getOptimalPMLSize`
-8. Filtering: `applyFilter`, `gaussianFilter`, `smooth`, `getWin`
-9. Signal: `toneBurst`, `gaussian`
-10. HDF5 I/O (k-Wave C++ format compatible)
-11. Unit conversion: `db2neper`, `neper2db`
-12. `getColorMap`
-13. First parity test against MATLAB reference data
-14. Basic test suite
+1. ✅ `KWaveGrid` (1D/2D/3D construction + wavenumber grids)
+2. ✅ `KWaveMedium`, `KWaveSource`, `KWaveSensor` (structs + RecordField) — **note: KWaveMedium has uncommitted regression, revert to HEAD first**
+3. ✅ FFT layer (`MLXFFT` wrappers) + spectral gradient + staggered derivative operators
+4. ✅ PML implementation (`pmlProfile`, `vectorToColumn`)
+5. ✅ `kspaceFirstOrder` for 2D and 3D (linear, lossless, **homogeneous only**)
+6. ✅ Geometry: `makeDisc`, `makeCircle`, `makeBall`, `makeSphere`
+7. ⚠️ Grid utilities: `cart2grid2D`, `grid2cart2D`, `expandMatrix` done; `resize`, `getOptimalPMLSize`, `interpCartData`, `fourierShift`, `findClosest`, `offGridPoints` **missing**
+8. ✅ Filtering: `applyFilter`, `gaussianFilter`, `smooth` (2D+3D), `getWin` (Hann+Blackman), `filterTimeSeries`
+9. ✅ Signal: `toneBurst`, `gaussian`
+10. ✅ HDF5 I/O (k-Wave C++ format compatible)
+11. ✅ Unit conversion: `db2neper`, `neper2db`
+12. ✅ `getColorMap`
+13. ⚠️ Parity test: 2D IVP (homogeneous) exists; requires reference HDF5 generated by `Scripts/parity/generate_reference.py`
+14. ⚠️ Basic test suite: FFT, grid, IO, geometry, solver, parity tests written but not all passing
 
-**Deliverable:** Run a 2D initial-value-problem simulation and produce validated output.
+**Remaining Phase 1 work (complete before Phase 2):**
+- ❌ `kspaceFirstOrder1D` — fatalError currently, implement 1D branch
+- ❌ `resize` — interpolated matrix resizing
+- ❌ `getOptimalPMLSize` — optimal PML thickness calculation
+- ❌ `SimulationOptions.progress` callback field
+- ❌ `SimulationOptions.smoothC0`, `smoothRho0` fields
 
-### Phase 2: Full Fluid Solver (P0 continued)
+### Phase 2: Full Fluid Solver (P0 continued) — ❌ Not started
 
-1. Heterogeneous media (varying sound speed + density)
-2. Power-law absorption and dispersion
-3. Nonlinear propagation (B/A)
-4. 1D and 3D solvers
-5. Time-reversal reconstruction
-6. Time-varying pressure and velocity sources (all source modes)
-7. All sensor recording fields (pMax, pRms, u, iAvg, etc.)
-8. Sensor directivity
-9. Real-time monitoring UI (Metal)
-10. Movie recording (AVFoundation)
-11. Full parity test suite (target: all 47 k-wave-python parity tests)
-12. Performance benchmarks vs MATLAB
+1. ❌ Heterogeneous media (varying sound speed + density) — remove `precondition(isHomogeneous)`, implement heterogeneous EOS and density splits
+2. ❌ Power-law absorption and dispersion
+3. ❌ Nonlinear propagation (B/A)
+4. ❌ Time-reversal reconstruction (via `sensor.timeReversalBoundaryData`)
+5. ❌ All sensor recording fields beyond `p`/`pFinal` — pMax, pMin, pRms, ux, uy, uz, uMax, uRms, uFinal, iAvg, iMax
+6. ❌ Sensor directivity
+7. ❌ Real-time monitoring UI (Metal)
+8. ❌ Movie recording (AVFoundation)
+9. ❌ Full parity test suite (target: all 47 k-wave-python parity tests)
+10. ❌ Performance benchmarks vs MATLAB
 
 **Deliverable:** Feature-complete fluid acoustic solver matching MATLAB `kspaceFirstOrder*`.
 
-### Phase 3: Extended Features (P1)
+### Phase 3: Extended Features (P1) — ❌ Not started
 
-1. Axisymmetric solver (`kspaceFirstOrderAS`)
-2. CW propagation (`acousticFieldPropagator`, `angularSpectrumCW`)
-3. `KWaveArray` (off-grid transducer arrays)
-4. `KWaveTransducer` (linear array model)
-5. Remaining geometry functions (arcs, bowls, lines, multi-element)
-6. Cartesian geometry functions
-7. Reconstruction: `kspaceLineRecon`, `kspacePlaneRecon`
-8. Extended signal processing and material property functions
-9. Visualization: `beamPlot`, `flyThrough`, `overlayPlot`, `stackedPlot`
-10. CLI tool
-11. SwiftUI dashboard prototype (monitoring + result viewing)
-12. DocC API docs and tutorials
+1. ❌ Axisymmetric solver `kspaceFirstOrderAS` → `Solver/Axisymmetric.swift`
+2. ❌ CW propagation: `acousticFieldPropagator`, `angularSpectrumCW` → `Solver/CW.swift`
+3. ❌ `KWaveArray` (off-grid transducer arrays) → `Array/KWaveArray.swift`
+4. ❌ `KWaveTransducer` (linear array model) → `Transducer/KWaveTransducer.swift`
+5. ❌ Remaining grid geometry: `makeArc`, `makeLine`, `makeBowl`, `makeMultiArc`, `makeMultiBowl`, `makeSphericalSection` → add to `Geometry/Shapes.swift`
+6. ❌ Cartesian geometry: `makeCartCircle`, `makeCartSphere`, `makeCartArc`, `makeCartBowl`, `makeCartDisc`, `makeCartRect` → `Geometry/Cartesian.swift`
+7. ❌ Reconstruction: `kspaceLineRecon`, `kspacePlaneRecon` → `Reconstruction/FFTRecon.swift`
+8. ❌ Signal processing: `addNoise`, `createCWSignals`, `extractAmpPhase`, `logCompression`, `envelopeDetection`, `gradientFD`, `gradientSpect`, `spect` → `Signal/Processing.swift`
+9. ❌ Material properties: `waterSoundSpeed`, `waterDensity`, `waterAbsorption`, `waterNonlinearity`, `fitPowerLawParams` → `Material/Properties.swift`
+10. ❌ Visualization: `SimulationDisplay`, `beamPlot`, `flyThrough`, `overlayPlot`, `stackedPlot` → `Viz/FieldDisplay.swift`, `Viz/Plots.swift`
+11. ❌ CLI tool → `kwave-cli/main.swift`
+12. ❌ SwiftUI dashboard prototype
+13. ❌ DocC API docs and tutorials
 
-### Phase 4: Advanced Solvers and Ecosystem (P2+)
+### Phase 4: Advanced Solvers and Ecosystem (P2+) — ❌ Not started
 
-1. Elastic wave solvers (`pstdElastic2D`, `pstdElastic3D`)
-2. Thermal simulation (`kWaveDiffusion`, `bioheatExact`)
-3. `voxelPlot` and advanced 3D visualization
-4. Analytical reference solutions
-5. Scan conversion, beamforming reconstruction
-6. Full parameter-editing dashboard
-7. PackageCompiler-equivalent standalone app bundle
-8. Ported example suite (~80 examples matching MATLAB)
+1. ❌ Elastic wave solvers `pstdElastic2D`, `pstdElastic3D` → `Solver/Elastic.swift`
+2. ❌ Thermal simulation `kwaveDiffusion`, `bioheatExact` → `Solver/Diffusion.swift`
+3. ❌ `voxelPlot`, `isosurfacePlot`, `maxIntensityProjection` → `Viz/Voxel.swift`
+4. ❌ Analytical reference solutions: `focusedAnnulusONeil`, `focusedBowlONeil`, `mendousse` → `Reference/Analytical.swift`
+5. ❌ Beamforming reconstruction: `beamformDelayAndSum`, `scanConversion` → `Reconstruction/Beamform.swift`
+6. ❌ Full parameter-editing dashboard
+7. ❌ PackageCompiler-equivalent standalone app bundle
+8. ❌ Ported example suite (~80 examples matching MATLAB)
 
 ---
 

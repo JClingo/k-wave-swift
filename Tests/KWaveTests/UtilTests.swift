@@ -150,6 +150,53 @@ final class UtilTests: XCTestCase {
         XCTAssertLessThan(g[0], g[1])
     }
 
+    func testGetOptimalPMLSizeMinimisesMaxPrimeFactor() {
+        // Brute-force reference for the same heuristic (min largest-prime-factor, ties → smallest).
+        func maxPrime(_ n: Int) -> Int {
+            guard n > 1 else { return 1 }
+            var m = n, d = 2, best = 1
+            while d * d <= m { while m % d == 0 { best = max(best, d); m /= d }; d += 1 }
+            return m > 1 ? max(best, m) : best
+        }
+        func expected(_ n: Int, _ range: ClosedRange<Int>) -> Int {
+            var bestPML = range.lowerBound, bestScore = Int.max
+            for s in range where maxPrime(n + 2 * s) < bestScore {
+                bestScore = maxPrime(n + 2 * s); bestPML = s
+            }
+            return bestPML
+        }
+        for n in [100, 128, 150, 256] {
+            XCTAssertEqual(getOptimalPMLSize([n]), [expected(n, 10...60)])
+        }
+        // One size per dimension.
+        XCTAssertEqual(getOptimalPMLSize([128, 150, 100]),
+                       [expected(128, 10...60), expected(150, 10...60), expected(100, 10...60)])
+    }
+
+    func testResizeLinearInterpolation() {
+        // Upscale a ramp: endpoints preserved, interior linearly interpolated.
+        let ramp = MLXArray([0, 1, 2, 3].map { Float($0) })
+        let up = resize(ramp, to: [7]).asArray(Float.self)
+        XCTAssertEqual(up.count, 7)
+        for (a, b) in zip(up, [0.0, 0.5, 1, 1.5, 2, 2.5, 3].map { Float($0) }) {
+            XCTAssertEqual(a, b, accuracy: 1e-5)
+        }
+        // Identity when sizes match.
+        let same = resize(ramp, to: [4]).asArray(Float.self)
+        for (a, b) in zip(same, [0, 1, 2, 3].map { Float($0) }) { XCTAssertEqual(a, b, accuracy: 1e-6) }
+    }
+
+    func testResize2DAnd3DShapeAndCorners() {
+        let m = MLXArray((0..<16).map { Float($0) }).reshaped([4, 4])
+        let r = resize(m, to: [8, 6])
+        XCTAssertEqual(r.shape, [8, 6])
+        let h = r.reshaped([48]).asArray(Float.self)
+        XCTAssertEqual(h[0], 0, accuracy: 1e-5)         // top-left corner preserved
+        XCTAssertEqual(h[47], 15, accuracy: 1e-5)       // bottom-right corner preserved
+        let v = MLXArray((0..<8).map { Float($0) }).reshaped([2, 2, 2])
+        XCTAssertEqual(resize(v, to: [3, 4, 5]).shape, [3, 4, 5])
+    }
+
     func testToneBurstShapeAndEnvelope() {
         let sampleFreq = 10e6, signalFreq = 1e6, numCycles = 3.0
         let burst = toneBurst(sampleFreq: sampleFreq, signalFreq: signalFreq, numCycles: numCycles)

@@ -38,8 +38,39 @@ func pmlProfile(
     return pml
 }
 
-/// Heuristic optimal PML size: prefer a thickness whose padded grid has small prime factors.
-/// Phase-1 placeholder — returns the requested default.
-public func getOptimalPMLSize(_ gridSize: [Int], defaultSize: Int = 20) -> Int {
-    defaultSize
+/// Optimal PML size per dimension: prefer a thickness whose padded grid (`n + 2*pmlSize`) has the
+/// smallest largest-prime-factor, which gives the most efficient FFT size. Mirrors MATLAB k-Wave
+/// `getOptimalPMLSize`.
+public func getOptimalPMLSize(_ gridSize: [Int], pmlRange: ClosedRange<Int> = 10...60) -> [Int] {
+    gridSize.map { optimalPMLForDim($0, range: pmlRange) }
+}
+
+/// Largest prime factor of `n` (1 for n <= 1). Smaller is better for FFT efficiency.
+private func maxPrimeFactor(_ n: Int) -> Int {
+    guard n > 1 else { return 1 }
+    var maxFactor = 1
+    var m = n
+    var d = 2
+    while d * d <= m {
+        while m % d == 0 {
+            maxFactor = max(maxFactor, d)
+            m /= d
+        }
+        d += 1
+    }
+    if m > 1 { maxFactor = max(maxFactor, m) }
+    return maxFactor
+}
+
+private func optimalPMLForDim(_ n: Int, range: ClosedRange<Int>) -> Int {
+    var bestPML = range.lowerBound
+    var bestScore = Int.max
+    for pmlSize in range {
+        let score = maxPrimeFactor(n + 2 * pmlSize)
+        if score < bestScore {
+            bestScore = score
+            bestPML = pmlSize
+        }
+    }
+    return bestPML
 }

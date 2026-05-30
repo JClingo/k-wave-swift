@@ -268,6 +268,29 @@ private func interpRadial(_ r: Double, winLin: [Double], radius: Double) -> Doub
     return abs(winLin[i0] * (1 - frac) + winLin[i0 + 1] * frac)
 }
 
+/// Smooth a 1D field with a Blackman window applied in k-space, rescaling to preserve the peak
+/// magnitude. The 1-D companion to `smooth`/`smooth3D` (which no-op on 1-D input).
+public func smooth1D(_ field: MLXArray) -> MLXArray {
+    guard field.ndim == 1 else { return field }
+    let nx = field.dim(0)
+    let (winLin, radius, axes) = rotationProfile(sizes: [nx])
+    let xs = axes[0]
+
+    let sx = (nx + 1) / 2
+    var flat = [Float](repeating: 0, count: nx)
+    for i in 0..<nx {
+        let w = Float(interpRadial(abs(xs[i]), winLin: winLin, radius: radius))
+        flat[(i + sx) % nx] = w   // ifftshift inline (peak-at-centre → index-0).
+    }
+    let winA = MLXArray(flat).asType(.complex64)
+    let smoothed = MLXFFT.ifft(winA * MLXFFT.fft(field.asType(.complex64))).realPart()
+
+    let srcMax = MLX.max(MLX.abs(field)).item(Float.self)
+    let outMax = MLX.max(MLX.abs(smoothed)).item(Float.self)
+    let scale = outMax > 0 ? srcMax / outMax : 1
+    return smoothed * scale
+}
+
 /// Smooth a 3D field with a rotationally-symmetric Blackman window (k-Wave `smooth`, restore_max).
 public func smooth3D(_ field: MLXArray) -> MLXArray {
     guard field.ndim == 3 else { return field }

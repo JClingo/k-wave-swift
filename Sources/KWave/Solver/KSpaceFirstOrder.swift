@@ -19,12 +19,16 @@ public struct SimulationOptions {
     public var pmlSize: PMLSize = .uniform(20)
     public var pmlAlpha: Double = 2.0
     public var smoothP0: Bool = true
+    public var smoothC0: Bool = false
+    public var smoothRho0: Bool = false
     public var dtype: DTypePrecision = .float32
     public var device: DeviceKind = .gpu
     public var plotSim: Bool = false
     public var plotScale: PlotScale = .auto
     public var recordMovie: String? = nil
     public var saveToDisk: String? = nil
+    /// Per-step progress callback: `(tIndex, nt)`. Called once per time step.
+    public var progress: ((Int, Int) -> Void)? = nil
 
     public init() {}
 }
@@ -49,6 +53,9 @@ public func kspaceFirstOrder(
     options: SimulationOptions = .init()
 ) -> SimulationOutput {
     switch grid.dim {
+    case 1:
+        return kspaceFirstOrder1D(grid: grid, medium: medium, source: source,
+                                  sensor: sensor, options: options)
     case 2:
         return kspaceFirstOrder2D(grid: grid, medium: medium, source: source,
                                   sensor: sensor, options: options)
@@ -133,6 +140,106 @@ private func makeSourceOp(mask: MLXArray?, signal: MLXArray?, mode: SourceMode,
     return SourceOp(indices: idx, signal: signalRows(signal),
                     scale: [Float](repeating: scalePerPoint, count: nSrc),
                     mode: mode, nSrc: nSrc, size: shape.reduce(1, *), shape: shape)
+}
+
+private func kspaceFirstOrder1D(
+    grid: KWaveGrid,
+    medium: KWaveMedium,
+    source: KWaveSource,
+    sensor: KWaveSensor,
+    options: SimulationOptions
+) -> SimulationOutput {
+    precondition(medium.isHomogeneous, "1D solver requires a homogeneous medium")
+    precondition(grid.nt > 0, "call grid.makeTime(...) before running the solver")
+    precondition(source.p0 != nil || source.pMask != nil || source.uMask != nil,
+                 "1D solver requires source.p0 or a time-varying p/u source")
+
+    let nx = grid.nx
+    let shape = [nx]
+    let dt = grid.dt
+    let c0 = medium.soundSpeed.item(Float.self)
+    let rho0 = medium.density.item(Float.self)
+
+    // k-space operators: kappa = sinc(c0*dt*|k|/2); source_kappa = cos(c0*dt*|k|/2).
+    let arg = grid.k * (Double(c0) * dt / 2.0)
+    let kappa = MLX.which(arg .== 0, MLXArray(Float(1)), MLX.sin(arg) / arg).asType(.float32)
+    let sourceKappa = MLX.cos(arg).asType(.float32)
+
+    let ddxPos = derivativeOperator(grid.kxVec, spacing: grid.dx, shift: +1)
+    let ddxNeg = derivativeOperator(grid.kxVec, spacing: grid.dx, shift: -1)
+
+    let pmlSizeN: Int = { switch options.pmlSize { case let .uniform(s): return s } }()
+    let pmlX = MLXArray(converting: pmlProfile(n: nx, dx: grid.dx, dt: dt, c: Double(c0),
+                                               pmlSize: pmlSizeN, pmlAlpha: options.pmlAlpha,
+                                               staggered: false)).asType(.float32)
+    let pmlXsg = MLXArray(converting: pmlProfile(n: nx, dx: grid.dx, dt: dt, c: Double(c0),
+                                                 pmlSize: pmlSizeN, pmlAlpha: options.pmlAlpha,
+                                                 staggered: true)).asType(.float32)
+
+    let c2 = Float(c0 * c0)
+    let dtOverRho = Float(dt) / rho0
+    let dtRho = Float(dt) * rho0
+    let ndim = 1
+
+    let pScaleDirichlet = Float(1.0 / (Double(ndim) * Double(c0) * Double(c0)))
+    let pScaleAddX = Float(2.0 * dt / (Double(ndim) * Double(c0) * grid.dx))
+    let pOpX = makeSourceOp(mask: source.pMask, signal: source.p, mode: source.pMode,
+                            scalePerPoint: source.pMode == .dirichlet ? pScaleDirichlet : pScaleAddX,
+                            shape: shape)
+    let uScaleX = source.uMode == .dirichlet ? Float(1) : Float(2.0 * Double(c0) * dt / grid.dx)
+    let uOpX = makeSourceOp(mask: source.uMask, signal: source.ux, mode: source.uMode,
+                            scalePerPoint: uScaleX, shape: shape)
+
+    var p0Field: MLXArray? = nil
+    if let p0 = source.p0 {
+        var f = p0.asType(.float32)
+        if options.smoothP0 { f = smooth1D(f) }
+        p0Field = f
+    }
+
+    let fwd: (MLXArray) -> MLXArray = { MLXFFT.fft($0) }
+    let inv: (MLXArray) -> MLXArray = { MLXFFT.ifft($0) }
+
+    var p = MLXArray.zeros(shape, dtype: .float32)
+    var ux = MLXArray.zeros(shape, dtype: .float32)
+    var rhox = MLXArray.zeros(shape, dtype: .float32)
+
+    let sensorIndices: MLXArray? = sensor.mask.map { flatNonzeroIndices($0) }
+    var recorded: [MLXArray] = []
+    recorded.reserveCapacity(grid.nt)
+
+    for t in 0..<grid.nt {
+        // Velocity update.
+        let pk = MLXFFT.fft(p.asType(.complex64))
+        let dpdx = MLXFFT.ifft(ddxPos * kappa * pk).realPart()
+        ux = pmlXsg * (pmlXsg * ux - dtOverRho * dpdx)
+        if let op = uOpX { ux = op.apply(ux, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+
+        // Density update.
+        let duxdx = MLXFFT.ifft(ddxNeg * kappa * MLXFFT.fft(ux.asType(.complex64))).realPart()
+        rhox = pmlX * (pmlX * rhox - dtRho * duxdx)
+        if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+
+        // Equation of state (linear, lossless).
+        p = c2 * rhox
+
+        // t=0 leapfrog override for an initial-pressure source.
+        if t == 0, let f = p0Field {
+            p = f
+            rhox = f / c2
+            let pk0 = MLXFFT.fft(p.asType(.complex64))
+            ux = (dtOverRho / 2) * MLXFFT.ifft(ddxPos * kappa * pk0).realPart()
+        }
+
+        if let idx = sensorIndices { recorded.append(p.reshaped([nx])[idx]) }
+        options.progress?(t, grid.nt)
+        MLX.eval(p, ux, rhox)
+    }
+
+    var output = SimulationOutput()
+    output.pFinal = p
+    if !recorded.isEmpty { output.p = MLX.stacked(recorded, axis: 1) }
+    return output
 }
 
 private func kspaceFirstOrder2D(
@@ -251,6 +358,7 @@ private func kspaceFirstOrder2D(
         }
 
         if let idx = sensorIndices { recorded.append(p.reshaped([nx * ny])[idx]) }
+        options.progress?(t, grid.nt)
         MLX.eval(p, ux, uy, rhox, rhoy)
     }
 
@@ -396,6 +504,7 @@ private func kspaceFirstOrder3D(
         }
 
         if let idx = sensorIndices { recorded.append(p.reshaped([nx * ny * nz])[idx]) }
+        options.progress?(t, grid.nt)
         MLX.eval(p, ux, uy, uz, rhox, rhoy, rhoz)
     }
 

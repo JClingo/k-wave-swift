@@ -33,6 +33,36 @@ public func expandMatrix(
     return cols.count == 1 ? vExpanded : MLX.concatenated(cols, axis: 1)
 }
 
+/// Resize an array to `newSize` via separable linear interpolation (k-Wave `resize`). Supports
+/// 1D/2D/3D; `newSize` must match `matrix.ndim`. Endpoints map to endpoints (inclusive sampling).
+public func resize(_ matrix: MLXArray, to newSize: [Int]) -> MLXArray {
+    precondition(matrix.ndim == newSize.count, "resize: newSize rank must match matrix rank")
+    var result = matrix.asType(.float32)
+    for axis in 0..<newSize.count where result.dim(axis) != newSize[axis] {
+        result = interpolateAxis(result, axis: axis, newLen: newSize[axis])
+    }
+    return result
+}
+
+/// Linearly interpolate one axis of `a` to `newLen` samples (inclusive endpoints).
+private func interpolateAxis(_ a: MLXArray, axis: Int, newLen: Int) -> MLXArray {
+    let n = a.dim(axis)
+    var i0 = [Int32](), i1 = [Int32](), frac = [Float]()
+    i0.reserveCapacity(newLen); i1.reserveCapacity(newLen); frac.reserveCapacity(newLen)
+    for k in 0..<newLen {
+        let pos = newLen == 1 ? 0 : Double(k) * Double(n - 1) / Double(newLen - 1)
+        let lo = max(0, min(Int(pos.rounded(.down)), n - 1))
+        let hi = min(lo + 1, n - 1)
+        i0.append(Int32(lo)); i1.append(Int32(hi)); frac.append(Float(pos - Double(lo)))
+    }
+    let a0 = a.take(MLXArray(i0), axis: axis)
+    let a1 = a.take(MLXArray(i1), axis: axis)
+    var bshape = [Int](repeating: 1, count: a.ndim)
+    bshape[axis] = newLen
+    let w = MLXArray(frac).reshaped(bshape)
+    return a0 * (1 - w) + a1 * w
+}
+
 /// Map 2D Cartesian sensor points onto a binary grid via nearest-neighbour (k-Wave `cart2grid`).
 ///
 /// - Returns: `(mask, reorderIndex)` — a `[nx, ny]` 0/1 mask and the order in which the masked

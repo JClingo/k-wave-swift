@@ -1,0 +1,13 @@
+.DS_Store
+.build/
+*.o
+*.d
+
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+xcuserdata/
+
+Package.resolved
+
+*.h5

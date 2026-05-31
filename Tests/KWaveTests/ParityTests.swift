@@ -204,4 +204,59 @@ final class ParityTests: XCTestCase {
     func test2DStokesAbsorptionParity() throws {
         try runAbsorptionParity(refName: "reference_2d_absorption_stokes.h5", mode: .stokes)
     }
+
+    /// Parity against a k-wave-python NumPy 2D IVP reference with quadratic B/A nonlinearity.
+    /// Exercises the `nl_factor = (2·Σρ + ρ0)/ρ0` scaling of the mass-conservation source term
+    /// and the `B/A·ρ²/(2ρ0)` term in the equation of state. The reference uses a high-amplitude
+    /// (3e7 Pa) initial pressure so the rho²-scaled nonlinearity is significant (≈7% of the field).
+    ///
+    /// Reference is the pure-NumPy solver (which Swift ports 1:1), so the tolerance is tight.
+    /// Regenerate with `Scripts/parity/generate_reference_nonlinear.py`.
+    func test2DNonlinearParity() throws {
+        let path = absorptionRefPath("reference_2d_nonlinear.h5")
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_nonlinear.py")
+        }
+        let f = try HDF5File(open: path)
+
+        let nx = Int(try f.readFloatDataset("Nx").data[0])
+        let ny = Int(try f.readFloatDataset("Ny").data[0])
+        let dx = Double(try f.readFloatDataset("dx").data[0])
+        let dy = Double(try f.readFloatDataset("dy").data[0])
+        let dt = Double(try f.readFloatDataset("dt").data[0])
+        let nt = Int(try f.readFloatDataset("Nt").data[0])
+        let c0 = Double(try f.readFloatDataset("c0").data[0])
+        let rho0 = Double(try f.readFloatDataset("rho0").data[0])
+        let pmlSize = Int(try f.readFloatDataset("pml_size").data[0])
+        let bOnA = Double(try f.readFloatDataset("BonA").data[0])
+
+        let (p0Shape, p0Data) = try f.readFloatDataset("p0")
+        let (pfShape, pfData) = try f.readFloatDataset("p_final")
+        XCTAssertEqual(p0Shape, [nx, ny])
+        XCTAssertEqual(pfShape, [nx, ny])
+
+        var grid = KWaveGrid(nx: nx, dx: dx, ny: ny, dy: dy)
+        grid.setTime(nt: nt, dt: dt)
+
+        let medium = KWaveMedium(soundSpeed: c0, density: rho0, bOnA: bOnA)
+        var source = KWaveSource()
+        source.p0 = MLXArray(p0Data).reshaped([nx, ny])
+        var options = SimulationOptions()
+        options.pmlSize = .uniform(pmlSize)
+
+        let out = kspaceFirstOrder(grid: grid, medium: medium, source: source,
+                                   sensor: KWaveSensor(), options: options)
+        let mine = out.pFinal!
+        let ref = MLXArray(pfData).reshaped([nx, ny])
+
+        let diff = MLX.abs(mine - ref)
+        let maxErr = MLX.max(diff).item(Float.self)
+        let refMax = MLX.max(MLX.abs(ref)).item(Float.self)
+        let l2 = sqrt(MLX.sum(diff * diff).item(Float.self) / Float(nx * ny))
+        let refL2 = sqrt(MLX.sum(ref * ref).item(Float.self) / Float(nx * ny))
+
+        XCTAssertEqual(grid.nt, nt)
+        XCTAssertLessThan(l2 / refL2, 1e-4)
+        XCTAssertLessThan(maxErr / refMax, 1e-4)
+    }
 }

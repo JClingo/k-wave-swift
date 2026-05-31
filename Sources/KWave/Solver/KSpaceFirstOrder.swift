@@ -215,6 +215,7 @@ private func kspaceFirstOrder1D(
     let inv: (MLXArray) -> MLXArray = { MLXFFT.ifft($0) }
     let absorb = makeAbsorption(medium: medium, c0: c0Grid, rho0: rho0Grid, k: grid.k,
                                 fwd: fwd, inv: inv)
+    let nonlinear = makeNonlinearity(medium: medium, rho0: rho0Grid)
 
     var p = MLXArray.zeros(shape, dtype: .float32)
     var ux = MLXArray.zeros(shape, dtype: .float32)
@@ -231,17 +232,18 @@ private func kspaceFirstOrder1D(
         ux = pmlXsg * (pmlXsg * ux - dtOverRhoX * dpdx)
         if let op = uOpX { ux = op.apply(ux, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Density update.
+        // Density update. nl_factor uses the previous step's density (before this update).
+        let nlFactor = nonlinear?.factor(rhox)
         let duxdx = MLXFFT.ifft(ddxNeg * kappa * MLXFFT.fft(ux.asType(.complex64))).realPart()
-        rhox = pmlX * (pmlX * rhox - dtRho0 * duxdx)
+        let massX = nlFactor.map { dtRho0 * duxdx * $0 } ?? (dtRho0 * duxdx)
+        rhox = pmlX * (pmlX * rhox - massX)
         if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Equation of state: p = c0^2 * (rho + absorption - dispersion).
-        if let absorb {
-            p = c2Grid * (rhox + absorb.eosTerm(divU: duxdx, rho: rhox))
-        } else {
-            p = c2Grid * rhox
-        }
+        // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
+        var eosRho = rhox
+        if let absorb { eosRho = eosRho + absorb.eosTerm(divU: duxdx, rho: rhox) }
+        if let nonlinear { eosRho = eosRho + nonlinear.term(rhox) }
+        p = c2Grid * eosRho
 
         // t=0 leapfrog override for an initial-pressure source.
         if t == 0, let f = p0Field {
@@ -347,6 +349,7 @@ private func kspaceFirstOrder2D(
     let inv: (MLXArray) -> MLXArray = { MLXFFT.ifft2($0) }
     let absorb = makeAbsorption(medium: medium, c0: c0Grid, rho0: rho0Grid, k: grid.k,
                                 fwd: fwd, inv: inv)
+    let nonlinear = makeNonlinearity(medium: medium, rho0: rho0Grid)
 
     var p = MLXArray.zeros(shape, dtype: .float32)
     var ux = MLXArray.zeros(shape, dtype: .float32)
@@ -368,21 +371,23 @@ private func kspaceFirstOrder2D(
         uy = pmlYsg * (pmlYsg * uy - dtOverRhoY * dpdy)
         if let op = uOpY { uy = op.apply(uy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Density update.
+        // Density update. nl_factor uses the previous step's density (before this update).
+        let nlFactor = nonlinear?.factor(rhox + rhoy)
         let duxdx = MLXFFT.ifft2(ddxNeg * kappa * MLXFFT.fft2(ux.asType(.complex64))).realPart()
         let duydy = MLXFFT.ifft2(ddyNeg * kappa * MLXFFT.fft2(uy.asType(.complex64))).realPart()
-        rhox = pmlX * (pmlX * rhox - dtRho0 * duxdx)
+        let massX = nlFactor.map { dtRho0 * duxdx * $0 } ?? (dtRho0 * duxdx)
+        let massY = nlFactor.map { dtRho0 * duydy * $0 } ?? (dtRho0 * duydy)
+        rhox = pmlX * (pmlX * rhox - massX)
         if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        rhoy = pmlY * (pmlY * rhoy - dtRho0 * duydy)
+        rhoy = pmlY * (pmlY * rhoy - massY)
         if let op = pOpY { rhoy = op.apply(rhoy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Equation of state: p = c0^2 * (rho + absorption - dispersion).
+        // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
         let rhoTotal = rhox + rhoy
-        if let absorb {
-            p = c2Grid * (rhoTotal + absorb.eosTerm(divU: duxdx + duydy, rho: rhoTotal))
-        } else {
-            p = c2Grid * rhoTotal
-        }
+        var eosRho = rhoTotal
+        if let absorb { eosRho = eosRho + absorb.eosTerm(divU: duxdx + duydy, rho: rhoTotal) }
+        if let nonlinear { eosRho = eosRho + nonlinear.term(rhoTotal) }
+        p = c2Grid * eosRho
 
         // t=0 leapfrog override for an initial-pressure source.
         if t == 0, let f = p0Field {
@@ -499,6 +504,7 @@ private func kspaceFirstOrder3D(
     let inv: (MLXArray) -> MLXArray = { MLXFFT.ifftn($0) }
     let absorb = makeAbsorption(medium: medium, c0: c0Grid, rho0: rho0Grid, k: grid.k,
                                 fwd: fwd, inv: inv)
+    let nonlinear = makeNonlinearity(medium: medium, rho0: rho0Grid)
 
     var p = MLXArray.zeros(shape, dtype: .float32)
     var ux = MLXArray.zeros(shape, dtype: .float32)
@@ -525,24 +531,27 @@ private func kspaceFirstOrder3D(
         uz = pmlZsg * (pmlZsg * uz - dtOverRhoZ * dpdz)
         if let op = uOpZ { uz = op.apply(uz, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Density update.
+        // Density update. nl_factor uses the previous step's density (before this update).
+        let nlFactor = nonlinear?.factor(rhox + rhoy + rhoz)
         let duxdx = MLXFFT.ifftn(ddxNeg * kappa * MLXFFT.fftn(ux.asType(.complex64))).realPart()
         let duydy = MLXFFT.ifftn(ddyNeg * kappa * MLXFFT.fftn(uy.asType(.complex64))).realPart()
         let duzdz = MLXFFT.ifftn(ddzNeg * kappa * MLXFFT.fftn(uz.asType(.complex64))).realPart()
-        rhox = pmlX * (pmlX * rhox - dtRho0 * duxdx)
+        let massX = nlFactor.map { dtRho0 * duxdx * $0 } ?? (dtRho0 * duxdx)
+        let massY = nlFactor.map { dtRho0 * duydy * $0 } ?? (dtRho0 * duydy)
+        let massZ = nlFactor.map { dtRho0 * duzdz * $0 } ?? (dtRho0 * duzdz)
+        rhox = pmlX * (pmlX * rhox - massX)
         if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        rhoy = pmlY * (pmlY * rhoy - dtRho0 * duydy)
+        rhoy = pmlY * (pmlY * rhoy - massY)
         if let op = pOpY { rhoy = op.apply(rhoy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        rhoz = pmlZ * (pmlZ * rhoz - dtRho0 * duzdz)
+        rhoz = pmlZ * (pmlZ * rhoz - massZ)
         if let op = pOpZ { rhoz = op.apply(rhoz, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Equation of state: p = c0^2 * (rho + absorption - dispersion).
+        // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
         let rhoTotal = rhox + rhoy + rhoz
-        if let absorb {
-            p = c2Grid * (rhoTotal + absorb.eosTerm(divU: duxdx + duydy + duzdz, rho: rhoTotal))
-        } else {
-            p = c2Grid * rhoTotal
-        }
+        var eosRho = rhoTotal
+        if let absorb { eosRho = eosRho + absorb.eosTerm(divU: duxdx + duydy + duzdz, rho: rhoTotal) }
+        if let nonlinear { eosRho = eosRho + nonlinear.term(rhoTotal) }
+        p = c2Grid * eosRho
 
         if t == 0, let f = p0Field {
             p = f
@@ -685,4 +694,29 @@ private func makeAbsorption(
 
     return PowerLawAbsorption(tau: tau, nabla1: nabla1, eta: eta, nabla2: nabla2,
                               rho0: rho0, fwd: fwd, inv: inv)
+}
+
+// MARK: - Nonlinearity (B/A)
+
+/// Quadratic (B/A) nonlinearity for the equation of state, mirroring k-wave-python
+/// `_init_nonlinearity`. It adds `B/A · ρ²/(2ρ0)` to the EOS and scales the mass-conservation
+/// source term by `nl_factor = (2·Σρ + ρ0)/ρ0` evaluated on the *previous* step's split densities.
+private struct Nonlinearity {
+    let bOnA: MLXArray
+    let rho0: MLXArray
+
+    /// `nl_factor`, from the previous step's total density `rhoTotalPrev` (sum of the split ρ's).
+    func factor(_ rhoTotalPrev: MLXArray) -> MLXArray { (2 * rhoTotalPrev + rho0) / rho0 }
+
+    /// Additive EOS term `B/A · ρ²/(2ρ0)`.
+    func term(_ rhoTotal: MLXArray) -> MLXArray { bOnA * (rhoTotal * rhoTotal) / (2 * rho0) }
+}
+
+/// Build the B/A nonlinearity operator, or `nil` when `bOnA` is absent or all-zero (matching
+/// k-wave-python's `_is_enabled`). The lossless path is unchanged in that case.
+private func makeNonlinearity(medium: KWaveMedium, rho0: MLXArray) -> Nonlinearity? {
+    guard let bOnA = medium.bOnA else { return nil }
+    let bf = bOnA.asType(.float32)
+    guard MLX.max(MLX.abs(bf)).item(Float.self) != 0 else { return nil }
+    return Nonlinearity(bOnA: bf, rho0: rho0)
 }

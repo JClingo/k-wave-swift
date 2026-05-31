@@ -102,7 +102,7 @@ is aspirational; significant gaps remain).
 - ✅ Power-law absorption and dispersion (power-law + Stokes; 1D/2D/3D)
 - ✅ Nonlinear propagation (B/A; 1D/2D/3D)
 - ✅ Time-reversal reconstruction (`timeReversal` helper)
-- All sensor recording fields beyond `p` and `pFinal`
+- ✅ Sensor recording fields beyond `p`/`pFinal` (pMax/pMin/pRms, collocated ux/uy/uz, uMax/uRms, uFinal, iAvg)
 - Sensor directivity
 - Real-time monitoring UI (Metal)
 - Movie recording (AVFoundation)
@@ -834,7 +834,7 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 2. ✅ Power-law absorption and dispersion — EOS gains `+ τ·∇^(y-2)(ρ0·∇·u) − η·∇^(y-1)(ρ)` (power-law) or `+ τ·ρ0·∇·u` (Stokes, y=2); `τ=-2αₙₚc0^(y-1)`, `η=2αₙₚc0^y·tan(πy/2)`; `AbsorptionMode` = `.powerLaw`/`.noDispersion`/`.stokes`/`.noAbsorption`; verified against NumPy solver (`ParityTests.test2DPowerLawAbsorptionParity`, `test2DStokesAbsorptionParity`)
 3. ✅ Nonlinear propagation (B/A) — EOS gains `+ B/A·ρ²/(2ρ0)`; mass-conservation source term scaled by `nl_factor = (2·Σρ + ρ0)/ρ0` (previous-step split densities); `medium.bOnA`; verified against NumPy solver (`ParityTests.test2DNonlinearParity`)
 4. ✅ Time-reversal reconstruction — `timeReversal()` helper in `Solver/TimeReversal.swift`: flips recorded sensor pressure in time, re-injects as a Dirichlet pressure source on the sensor mask, runs the solver, returns `compensationFactor·pFinal` with positivity clamp. Pure composition of the existing (parity-tested) Dirichlet source path. Verified against NumPy (`ParityTests.test2DTimeReversalParity`)
-5. ❌ All sensor recording fields beyond `p`/`pFinal` — pMax, pMin, pRms, ux, uy, uz, uMax, uRms, uFinal, iAvg, iMax
+5. ✅ Sensor recording fields beyond `p`/`pFinal` — pMax/pMin/pRms, collocated ux/uy/uz time series (unstaggered via `exp(-i·k·d/2)`), uMax/uRms (per-component), uFinal, iAvg (time-averaged intensity with Fourier half-sample velocity shift). Driven by `RecordField` option set + `RecordPlan`; aggregates/intensity post-processed in `Sensor/Recording.swift`. Verified against NumPy (`ParityRecordTests.test2DRecordingFieldsParity`). NOTE: `iMax` not implemented (k-wave-python's `acoustic_intensity` has no I_max output to validate against)
 6. ❌ Sensor directivity
 7. ❌ Real-time monitoring UI (Metal)
 8. ❌ Movie recording (AVFoundation)

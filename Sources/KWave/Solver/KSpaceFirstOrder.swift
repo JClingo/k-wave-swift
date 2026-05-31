@@ -33,12 +33,37 @@ public struct SimulationOptions {
     public init() {}
 }
 
-/// Recorded simulation results.
+/// Recorded simulation results. Which fields are populated is controlled by `sensor.record`
+/// (a `RecordField` option set); `pFinal` is always returned. Time series have shape
+/// `[numSensorPoints, nt]`; aggregates have shape `[numSensorPoints]`; final/`*Final` fields are
+/// the whole-grid snapshot at the last step. Velocity time series are interpolated to the
+/// (collocated) pressure grid, matching k-Wave's `ux`/`uy`/`uz` outputs.
 public struct SimulationOutput {
-    /// Pressure time series at sensor points, shape `[numSensorPoints, nt]`.
+    // Pressure.
     public var p: MLXArray?
-    /// Final pressure field over the whole grid.
+    public var pMax: MLXArray?
+    public var pMin: MLXArray?
+    public var pRms: MLXArray?
     public var pFinal: MLXArray?
+    // Velocity time series (collocated to the pressure grid).
+    public var ux: MLXArray?
+    public var uy: MLXArray?
+    public var uz: MLXArray?
+    // Velocity aggregates (per component).
+    public var uxMax: MLXArray?
+    public var uyMax: MLXArray?
+    public var uzMax: MLXArray?
+    public var uxRms: MLXArray?
+    public var uyRms: MLXArray?
+    public var uzRms: MLXArray?
+    // Velocity final fields (whole grid).
+    public var uxFinal: MLXArray?
+    public var uyFinal: MLXArray?
+    public var uzFinal: MLXArray?
+    // Time-averaged acoustic intensity (per component).
+    public var ixAvg: MLXArray?
+    public var iyAvg: MLXArray?
+    public var izAvg: MLXArray?
 }
 
 /// k-space pseudospectral first-order acoustic solver. Branches on `grid.dim`.
@@ -221,9 +246,10 @@ private func kspaceFirstOrder1D(
     var ux = MLXArray.zeros(shape, dtype: .float32)
     var rhox = MLXArray.zeros(shape, dtype: .float32)
 
+    let plan = RecordPlan(sensor.record)
     let sensorIndices: MLXArray? = sensor.mask.map { flatNonzeroIndices($0) }
-    var recorded: [MLXArray] = []
-    recorded.reserveCapacity(grid.nt)
+    let collocX = plan.recordU ? collocationOp(grid.kxVec, spacing: grid.dx) : nil
+    var pRec: [MLXArray] = [], uxRec: [MLXArray] = []
 
     for t in 0..<grid.nt {
         // Velocity update.
@@ -253,15 +279,24 @@ private func kspaceFirstOrder1D(
             ux = (dtOverRhoX / 2) * MLXFFT.ifft(ddxPos * kappa * pk0).realPart()
         }
 
-        if let idx = sensorIndices { recorded.append(p.reshaped([nx])[idx]) }
+        if let idx = sensorIndices {
+            if plan.recordP { pRec.append(p.reshaped([nx])[idx]) }
+            if plan.recordU {
+                let uxC = MLXFFT.ifft(collocX! * MLXFFT.fft(ux.asType(.complex64))).realPart()
+                let sx = uxC.reshaped([nx])[idx]
+                MLX.eval(sx)
+                uxRec.append(sx)
+            }
+        }
         options.progress?(t, grid.nt)
         MLX.eval(p, ux, rhox)
     }
 
-    var output = SimulationOutput()
-    output.pFinal = p
-    if !recorded.isEmpty { output.p = MLX.stacked(recorded, axis: 1) }
-    return output
+    return finalizeRecording(
+        record: sensor.record,
+        p: pRec.isEmpty ? nil : MLX.stacked(pRec, axis: 1),
+        ux: uxRec.isEmpty ? nil : MLX.stacked(uxRec, axis: 1), uy: nil, uz: nil,
+        pFinal: p, uxFinal: plan.recordUFinal ? ux : nil, uyFinal: nil, uzFinal: nil)
 }
 
 private func kspaceFirstOrder2D(
@@ -357,9 +392,11 @@ private func kspaceFirstOrder2D(
     var rhox = MLXArray.zeros(shape, dtype: .float32)
     var rhoy = MLXArray.zeros(shape, dtype: .float32)
 
+    let plan = RecordPlan(sensor.record)
     let sensorIndices: MLXArray? = sensor.mask.map { flatNonzeroIndices($0) }
-    var recorded: [MLXArray] = []
-    recorded.reserveCapacity(grid.nt)
+    let collocX = plan.recordU ? collocationOp(grid.kxVec, spacing: grid.dx).reshaped([nx, 1]) : nil
+    let collocY = plan.recordU ? collocationOp(grid.kyVec, spacing: grid.dy).reshaped([1, ny]) : nil
+    var pRec: [MLXArray] = [], uxRec: [MLXArray] = [], uyRec: [MLXArray] = []
 
     for t in 0..<grid.nt {
         // Velocity update.
@@ -399,15 +436,27 @@ private func kspaceFirstOrder2D(
             uy = (dtOverRhoY / 2) * MLXFFT.ifft2(ddyPos * kappa * pk0).realPart()
         }
 
-        if let idx = sensorIndices { recorded.append(p.reshaped([nx * ny])[idx]) }
+        if let idx = sensorIndices {
+            if plan.recordP { pRec.append(p.reshaped([nx * ny])[idx]) }
+            if plan.recordU {
+                let uxC = MLXFFT.ifft2(collocX! * MLXFFT.fft2(ux.asType(.complex64))).realPart()
+                let uyC = MLXFFT.ifft2(collocY! * MLXFFT.fft2(uy.asType(.complex64))).realPart()
+                let sx = uxC.reshaped([nx * ny])[idx], sy = uyC.reshaped([nx * ny])[idx]
+                MLX.eval(sx, sy)
+                uxRec.append(sx); uyRec.append(sy)
+            }
+        }
         options.progress?(t, grid.nt)
         MLX.eval(p, ux, uy, rhox, rhoy)
     }
 
-    var output = SimulationOutput()
-    output.pFinal = p
-    if !recorded.isEmpty { output.p = MLX.stacked(recorded, axis: 1) }
-    return output
+    return finalizeRecording(
+        record: sensor.record,
+        p: pRec.isEmpty ? nil : MLX.stacked(pRec, axis: 1),
+        ux: uxRec.isEmpty ? nil : MLX.stacked(uxRec, axis: 1),
+        uy: uyRec.isEmpty ? nil : MLX.stacked(uyRec, axis: 1), uz: nil,
+        pFinal: p, uxFinal: plan.recordUFinal ? ux : nil,
+        uyFinal: plan.recordUFinal ? uy : nil, uzFinal: nil)
 }
 
 private func kspaceFirstOrder3D(
@@ -514,9 +563,12 @@ private func kspaceFirstOrder3D(
     var rhoy = MLXArray.zeros(shape, dtype: .float32)
     var rhoz = MLXArray.zeros(shape, dtype: .float32)
 
+    let plan = RecordPlan(sensor.record)
     let sensorIndices: MLXArray? = sensor.mask.map { flatNonzeroIndices($0) }
-    var recorded: [MLXArray] = []
-    recorded.reserveCapacity(grid.nt)
+    let collocX = plan.recordU ? collocationOp(grid.kxVec, spacing: grid.dx).reshaped([nx, 1, 1]) : nil
+    let collocY = plan.recordU ? collocationOp(grid.kyVec, spacing: grid.dy).reshaped([1, ny, 1]) : nil
+    let collocZ = plan.recordU ? collocationOp(grid.kzVec, spacing: grid.dz).reshaped([1, 1, nz]) : nil
+    var pRec: [MLXArray] = [], uxRec: [MLXArray] = [], uyRec: [MLXArray] = [], uzRec: [MLXArray] = []
 
     for t in 0..<grid.nt {
         // Velocity update.
@@ -564,15 +616,30 @@ private func kspaceFirstOrder3D(
             uz = (dtOverRhoZ / 2) * MLXFFT.ifftn(ddzPos * kappa * pk0).realPart()
         }
 
-        if let idx = sensorIndices { recorded.append(p.reshaped([nx * ny * nz])[idx]) }
+        if let idx = sensorIndices {
+            let size = nx * ny * nz
+            if plan.recordP { pRec.append(p.reshaped([size])[idx]) }
+            if plan.recordU {
+                let uxC = MLXFFT.ifftn(collocX! * MLXFFT.fftn(ux.asType(.complex64))).realPart()
+                let uyC = MLXFFT.ifftn(collocY! * MLXFFT.fftn(uy.asType(.complex64))).realPart()
+                let uzC = MLXFFT.ifftn(collocZ! * MLXFFT.fftn(uz.asType(.complex64))).realPart()
+                let sx = uxC.reshaped([size])[idx], sy = uyC.reshaped([size])[idx], sz = uzC.reshaped([size])[idx]
+                MLX.eval(sx, sy, sz)
+                uxRec.append(sx); uyRec.append(sy); uzRec.append(sz)
+            }
+        }
         options.progress?(t, grid.nt)
         MLX.eval(p, ux, uy, uz, rhox, rhoy, rhoz)
     }
 
-    var output = SimulationOutput()
-    output.pFinal = p
-    if !recorded.isEmpty { output.p = MLX.stacked(recorded, axis: 1) }
-    return output
+    return finalizeRecording(
+        record: sensor.record,
+        p: pRec.isEmpty ? nil : MLX.stacked(pRec, axis: 1),
+        ux: uxRec.isEmpty ? nil : MLX.stacked(uxRec, axis: 1),
+        uy: uyRec.isEmpty ? nil : MLX.stacked(uyRec, axis: 1),
+        uz: uzRec.isEmpty ? nil : MLX.stacked(uzRec, axis: 1),
+        pFinal: p, uxFinal: plan.recordUFinal ? ux : nil,
+        uyFinal: plan.recordUFinal ? uy : nil, uzFinal: plan.recordUFinal ? uz : nil)
 }
 
 /// i*k * exp(±i*k*Δ/2) staggered derivative multiplier (FFT order), as a complex64 vector.

@@ -259,4 +259,63 @@ final class ParityTests: XCTestCase {
         XCTAssertLessThan(l2 / refL2, 1e-4)
         XCTAssertLessThan(maxErr / refMax, 1e-4)
     }
+
+    /// Parity against a k-wave-python NumPy 2D time-reversal reconstruction. A disc p0 radiates to a
+    /// circular sensor; the recorded pressure (loaded from the reference) is fed to `timeReversal`,
+    /// which time-reverses it, re-injects it as a Dirichlet boundary condition, runs the solver, and
+    /// returns the compensated, positivity-constrained reconstruction. Isolates the TR composition
+    /// by reusing the same recorded data the NumPy reference reconstructed from.
+    ///
+    /// Reference is the pure-NumPy solver (which Swift ports 1:1), so the tolerance is tight.
+    /// Regenerate with `Scripts/parity/generate_reference_tr.py`.
+    func test2DTimeReversalParity() throws {
+        let path = absorptionRefPath("reference_2d_tr.h5")
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_tr.py")
+        }
+        let f = try HDF5File(open: path)
+
+        let nx = Int(try f.readFloatDataset("Nx").data[0])
+        let ny = Int(try f.readFloatDataset("Ny").data[0])
+        let dx = Double(try f.readFloatDataset("dx").data[0])
+        let dy = Double(try f.readFloatDataset("dy").data[0])
+        let dt = Double(try f.readFloatDataset("dt").data[0])
+        let nt = Int(try f.readFloatDataset("Nt").data[0])
+        let c0 = Double(try f.readFloatDataset("c0").data[0])
+        let rho0 = Double(try f.readFloatDataset("rho0").data[0])
+        let pmlSize = Int(try f.readFloatDataset("pml_size").data[0])
+        let comp = Double(try f.readFloatDataset("comp").data[0])
+
+        let (maskShape, maskData) = try f.readFloatDataset("mask")
+        let (recShape, recData) = try f.readFloatDataset("recorded_p")
+        let (reconShape, reconData) = try f.readFloatDataset("p0_recon")
+        XCTAssertEqual(maskShape, [nx, ny])
+        XCTAssertEqual(recShape.count, 2)
+        XCTAssertEqual(recShape[1], nt)
+        XCTAssertEqual(reconShape, [nx, ny])
+
+        var grid = KWaveGrid(nx: nx, dx: dx, ny: ny, dy: dy)
+        grid.setTime(nt: nt, dt: dt)
+
+        let medium = KWaveMedium(soundSpeed: c0, density: rho0)
+        let sensor = KWaveSensor(mask: MLXArray(maskData).reshaped([nx, ny]))
+        let recorded = MLXArray(recData).reshaped(recShape)
+        var options = SimulationOptions()
+        options.pmlSize = .uniform(pmlSize)
+
+        let mine = timeReversal(grid: grid, medium: medium, sensor: sensor,
+                                recordedPressure: recorded, compensationFactor: comp,
+                                options: options)
+        let ref = MLXArray(reconData).reshaped([nx, ny])
+
+        let diff = MLX.abs(mine - ref)
+        let maxErr = MLX.max(diff).item(Float.self)
+        let refMax = MLX.max(MLX.abs(ref)).item(Float.self)
+        let l2 = sqrt(MLX.sum(diff * diff).item(Float.self) / Float(nx * ny))
+        let refL2 = sqrt(MLX.sum(ref * ref).item(Float.self) / Float(nx * ny))
+
+        XCTAssertEqual(grid.nt, nt)
+        XCTAssertLessThan(l2 / refL2, 1e-4)
+        XCTAssertLessThan(maxErr / refMax, 1e-4)
+    }
 }

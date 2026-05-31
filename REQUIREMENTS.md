@@ -83,7 +83,9 @@ is aspirational; significant gaps remain).
 | Heterogeneous media in solver | ✅ Implemented (spatially varying c0/rho0 in 1D/2D/3D; staggered density, `c_ref=max(c0)`) |
 | `resize` (interpolated resizing) | ✅ Implemented (`Grid/GridUtils.swift`, separable linear interp 1D/2D/3D) |
 | `getOptimalPMLSize` | ✅ Implemented (`PML/PML.swift`, prime-factor heuristic, returns `[Int]` per dim) |
-| `interpCartData`, `fourierShift`, `findClosest`, `offGridPoints` | Not implemented |
+| `interpCartData` (nearest), `fourierShift` | ✅ Implemented (`Interp/InterpCartData.swift`, `Signal/FourierShift.swift`); verified vs NumPy (`ParityCartesianTests`) |
+| Cartesian (off-grid) sensor masks | ✅ Implemented (`[dim, N]` point masks, multilinear interp recording via `SensorSampler`; 1D/2D/3D) |
+| `findClosest`, `offGridPoints`, `interpCartData` linear mode | Not implemented |
 | `SimulationOptions.progress` callback | ✅ Added; fires once per step in all solvers |
 | `SimulationOptions.smoothC0`, `smoothRho0` | ✅ Implemented and wired (smooth spatially varying c0/rho0 when set) |
 

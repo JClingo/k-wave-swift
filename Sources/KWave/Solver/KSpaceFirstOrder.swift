@@ -247,7 +247,7 @@ private func kspaceFirstOrder1D(
     var rhox = MLXArray.zeros(shape, dtype: .float32)
 
     let plan = RecordPlan(sensor.record)
-    let sensorIndices: MLXArray? = sensor.mask.map { flatNonzeroIndices($0) }
+    let sampler: SensorSampler? = sensor.mask.map { makeSensorSampler(mask: $0, grid: grid) }
     let collocX = plan.recordU ? collocationOp(grid.kxVec, spacing: grid.dx) : nil
     var pRec: [MLXArray] = [], uxRec: [MLXArray] = []
 
@@ -279,11 +279,11 @@ private func kspaceFirstOrder1D(
             ux = (dtOverRhoX / 2) * MLXFFT.ifft(ddxPos * kappa * pk0).realPart()
         }
 
-        if let idx = sensorIndices {
-            if plan.recordP { pRec.append(p.reshaped([nx])[idx]) }
+        if let sampler {
+            if plan.recordP { pRec.append(sampler.sample(p)) }
             if plan.recordU {
                 let uxC = MLXFFT.ifft(collocX! * MLXFFT.fft(ux.asType(.complex64))).realPart()
-                let sx = uxC.reshaped([nx])[idx]
+                let sx = sampler.sample(uxC)
                 MLX.eval(sx)
                 uxRec.append(sx)
             }
@@ -393,7 +393,7 @@ private func kspaceFirstOrder2D(
     var rhoy = MLXArray.zeros(shape, dtype: .float32)
 
     let plan = RecordPlan(sensor.record)
-    let sensorIndices: MLXArray? = sensor.mask.map { flatNonzeroIndices($0) }
+    let sampler: SensorSampler? = sensor.mask.map { makeSensorSampler(mask: $0, grid: grid) }
     let collocX = plan.recordU ? collocationOp(grid.kxVec, spacing: grid.dx).reshaped([nx, 1]) : nil
     let collocY = plan.recordU ? collocationOp(grid.kyVec, spacing: grid.dy).reshaped([1, ny]) : nil
     var pRec: [MLXArray] = [], uxRec: [MLXArray] = [], uyRec: [MLXArray] = []
@@ -436,12 +436,12 @@ private func kspaceFirstOrder2D(
             uy = (dtOverRhoY / 2) * MLXFFT.ifft2(ddyPos * kappa * pk0).realPart()
         }
 
-        if let idx = sensorIndices {
-            if plan.recordP { pRec.append(p.reshaped([nx * ny])[idx]) }
+        if let sampler {
+            if plan.recordP { pRec.append(sampler.sample(p)) }
             if plan.recordU {
                 let uxC = MLXFFT.ifft2(collocX! * MLXFFT.fft2(ux.asType(.complex64))).realPart()
                 let uyC = MLXFFT.ifft2(collocY! * MLXFFT.fft2(uy.asType(.complex64))).realPart()
-                let sx = uxC.reshaped([nx * ny])[idx], sy = uyC.reshaped([nx * ny])[idx]
+                let sx = sampler.sample(uxC), sy = sampler.sample(uyC)
                 MLX.eval(sx, sy)
                 uxRec.append(sx); uyRec.append(sy)
             }
@@ -564,7 +564,7 @@ private func kspaceFirstOrder3D(
     var rhoz = MLXArray.zeros(shape, dtype: .float32)
 
     let plan = RecordPlan(sensor.record)
-    let sensorIndices: MLXArray? = sensor.mask.map { flatNonzeroIndices($0) }
+    let sampler: SensorSampler? = sensor.mask.map { makeSensorSampler(mask: $0, grid: grid) }
     let collocX = plan.recordU ? collocationOp(grid.kxVec, spacing: grid.dx).reshaped([nx, 1, 1]) : nil
     let collocY = plan.recordU ? collocationOp(grid.kyVec, spacing: grid.dy).reshaped([1, ny, 1]) : nil
     let collocZ = plan.recordU ? collocationOp(grid.kzVec, spacing: grid.dz).reshaped([1, 1, nz]) : nil
@@ -616,14 +616,13 @@ private func kspaceFirstOrder3D(
             uz = (dtOverRhoZ / 2) * MLXFFT.ifftn(ddzPos * kappa * pk0).realPart()
         }
 
-        if let idx = sensorIndices {
-            let size = nx * ny * nz
-            if plan.recordP { pRec.append(p.reshaped([size])[idx]) }
+        if let sampler {
+            if plan.recordP { pRec.append(sampler.sample(p)) }
             if plan.recordU {
                 let uxC = MLXFFT.ifftn(collocX! * MLXFFT.fftn(ux.asType(.complex64))).realPart()
                 let uyC = MLXFFT.ifftn(collocY! * MLXFFT.fftn(uy.asType(.complex64))).realPart()
                 let uzC = MLXFFT.ifftn(collocZ! * MLXFFT.fftn(uz.asType(.complex64))).realPart()
-                let sx = uxC.reshaped([size])[idx], sy = uyC.reshaped([size])[idx], sz = uzC.reshaped([size])[idx]
+                let sx = sampler.sample(uxC), sy = sampler.sample(uyC), sz = sampler.sample(uzC)
                 MLX.eval(sx, sy, sz)
                 uxRec.append(sx); uyRec.append(sy); uzRec.append(sz)
             }
@@ -657,7 +656,7 @@ private func vectorToColumn(_ values: [Double], length: Int, axis: Int, other: I
 }
 
 /// Flattened indices of nonzero mask entries, as an Int32 MLXArray for gathering.
-private func flatNonzeroIndices(_ mask: MLXArray) -> MLXArray {
+func flatNonzeroIndices(_ mask: MLXArray) -> MLXArray {
     let host = mask.reshaped([mask.size]).asArray(Float.self)
     let idx = host.enumerated().compactMap { $0.element != 0 ? Int32($0.offset) : nil }
     return MLXArray(idx)

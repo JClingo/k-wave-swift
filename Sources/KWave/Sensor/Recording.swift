@@ -1,3 +1,4 @@
+import Foundation
 import MLX
 import MLXFFT
 
@@ -19,6 +20,80 @@ struct RecordPlan {
 
     /// Whether any per-step sensor sampling is needed (requires a sensor mask).
     var needsSampling: Bool { recordP || recordU }
+}
+
+/// Extracts sensor samples from a field, supporting both binary grid masks (index gather) and
+/// Cartesian point masks (`[dim, nPoints]`, multilinear interpolation). Mirrors the k-wave-python
+/// solver's binary-vs-Cartesian `_extract` dispatch (`RegularGridInterpolator` linear).
+struct SensorSampler {
+    enum Kind {
+        case binary(MLXArray)                                       // flat indices [nPoints].
+        case cartesian(idx: MLXArray, weight: MLXArray, nCorners: Int)  // both [nPoints·nCorners].
+    }
+    let nPoints: Int
+    let kind: Kind
+
+    /// Sensor values for `field`, shape `[nPoints]`.
+    func sample(_ field: MLXArray) -> MLXArray {
+        let flat = field.reshaped([field.size])
+        switch kind {
+        case .binary(let idx):
+            return flat[idx]
+        case .cartesian(let idx, let weight, let nCorners):
+            return MLX.sum((flat[idx] * weight).reshaped([nPoints, nCorners]), axis: 1)
+        }
+    }
+}
+
+/// Build a `SensorSampler` for `mask`. A mask shaped `[dim, nPoints]` is Cartesian (matching
+/// k-wave-python's `_is_cartesian`); anything else is a binary grid mask.
+func makeSensorSampler(mask: MLXArray, grid: KWaveGrid) -> SensorSampler {
+    if mask.ndim == 2 && mask.dim(0) == grid.dim {
+        return cartesianSampler(mask: mask, grid: grid)
+    }
+    let idx = flatNonzeroIndices(mask)
+    return SensorSampler(nPoints: idx.size, kind: .binary(idx))
+}
+
+/// Precompute multilinear interpolation corners + weights for a Cartesian sensor mask. Grid axis
+/// coordinates are `(i - n/2)·d`, so the continuous grid position of a point is `coord/d + n/2`.
+private func cartesianSampler(mask: MLXArray, grid: KWaveGrid) -> SensorSampler {
+    let dim = grid.dim
+    let nPts = mask.dim(1)
+    let host = mask.reshaped([dim * nPts]).asArray(Float.self)
+    func coord(_ axis: Int, _ i: Int) -> Double { Double(host[axis * nPts + i]) }
+    let dims = grid.size
+    let spacing = grid.spacing
+    let nCorners = 1 << dim
+
+    var idxFlat = [Int32](repeating: 0, count: nPts * nCorners)
+    var wFlat = [Float](repeating: 0, count: nPts * nCorners)
+    for p in 0..<nPts {
+        var i0 = [Int](repeating: 0, count: dim)
+        var frac = [Double](repeating: 0, count: dim)
+        for axis in 0..<dim {
+            let g = coord(axis, p) / spacing[axis] + Double(dims[axis] / 2)
+            precondition(g >= 0 && g <= Double(dims[axis] - 1),
+                         "Cartesian sensor point outside grid bounds (axis \(axis))")
+            let f = Foundation.floor(g)
+            i0[axis] = Int(f)
+            frac[axis] = g - f
+        }
+        for c in 0..<nCorners {
+            var flat = 0
+            var w = 1.0
+            for axis in 0..<dim {
+                let bit = (c >> axis) & 1
+                let ai = min(i0[axis] + bit, dims[axis] - 1)
+                w *= bit == 1 ? frac[axis] : (1 - frac[axis])
+                flat = flat * dims[axis] + ai
+            }
+            idxFlat[p * nCorners + c] = Int32(flat)
+            wFlat[p * nCorners + c] = Float(w)
+        }
+    }
+    return SensorSampler(nPoints: nPts,
+                         kind: .cartesian(idx: MLXArray(idxFlat), weight: MLXArray(wFlat), nCorners: nCorners))
 }
 
 /// `exp(-i·k·d/2)` multiplier that interpolates a staggered (mid-cell) velocity field back onto the

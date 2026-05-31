@@ -99,7 +99,7 @@ is aspirational; significant gaps remain).
 ### Phase 2 — Full Fluid Solver 🚧 (in progress)
 
 - ✅ Heterogeneous media support in solver (spatially varying c0/rho0, 1D/2D/3D)
-- Power-law absorption and dispersion
+- ✅ Power-law absorption and dispersion (power-law + Stokes; 1D/2D/3D)
 - Nonlinear propagation
 - Time-reversal reconstruction
 - All sensor recording fields beyond `p` and `pFinal`
@@ -141,8 +141,7 @@ All of Phase 3 is unimplemented. Missing files and their target locations:
 **The k-wave-python source (`/Users/jingo/Work/Attune/k-wave-python/`) is the direct source
 reference for all modules.** It is the most mature port (matches the MATLAB original closely),
 the project ships a working install in `.venv-kwave/`, and its pure-NumPy solver
-(`kwave/solvers/kspace_solver.py`) is the formulation the Swift solver mirrors 1:1. (The earlier
-Julia port `k-wave-julia/KWave.jl/` is **no longer a reference** — do not port from it.)
+(`kwave/solvers/kspace_solver.py`) is the formulation the Swift solver mirrors 1:1.
 
 When implementing or validating a module, map the Swift target to its k-wave-python counterpart:
 
@@ -832,7 +831,7 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 ### Phase 2: Full Fluid Solver (P0 continued) — ❌ Not started
 
 1. ✅ Heterogeneous media (varying sound speed + density) — staggered-density velocity update, `dt·ρ0` density update, `c0²·Σρ` EOS, `c_ref=max(c0)`; verified against k-wave-python's NumPy solver (`ParityTests.test2DHeterogeneousParity`)
-2. ❌ Power-law absorption and dispersion
+2. ✅ Power-law absorption and dispersion — EOS gains `+ τ·∇^(y-2)(ρ0·∇·u) − η·∇^(y-1)(ρ)` (power-law) or `+ τ·ρ0·∇·u` (Stokes, y=2); `τ=-2αₙₚc0^(y-1)`, `η=2αₙₚc0^y·tan(πy/2)`; `AbsorptionMode` = `.powerLaw`/`.noDispersion`/`.stokes`/`.noAbsorption`; verified against NumPy solver (`ParityTests.test2DPowerLawAbsorptionParity`, `test2DStokesAbsorptionParity`)
 3. ❌ Nonlinear propagation (B/A)
 4. ❌ Time-reversal reconstruction (via `sensor.timeReversalBoundaryData`)
 5. ❌ All sensor recording fields beyond `p`/`pFinal` — pMax, pMin, pRms, ux, uy, uz, uMax, uRms, uFinal, iAvg, iMax

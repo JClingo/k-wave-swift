@@ -1,9 +1,18 @@
 import MLX
 
-/// Acoustic absorption model.
+/// Acoustic absorption model (mirrors k-Wave `medium.alpha_mode`).
+///
+/// Absorption is applied only when `alphaCoeff` is also set; `.noAbsorption` is
+/// the lossless default. `.powerLaw` and `.noDispersion` use `alphaPower` (default
+/// 1.5); `.stokes` forces `alphaPower = 2`.
 public enum AbsorptionMode: Sendable {
+    /// Lossless — absorption and dispersion both excluded from the equation of state.
     case noAbsorption
+    /// Full power-law: absorption + dispersion fractional-Laplacian terms.
+    case powerLaw
+    /// Power-law absorption only; dispersion term excluded.
     case noDispersion
+    /// Stokes absorption (`alphaPower` forced to 2); direct, no dispersion.
     case stokes
 }
 

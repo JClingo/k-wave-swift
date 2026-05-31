@@ -1,0 +1,36 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Apple Silicon runner: MLX requires Metal / arm64.
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install HDF5
+        run: brew install hdf5
+
+      - name: Install Metal Toolchain
+        # MLX's Metal shaders are compiled by xcodebuild, which needs this component.
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Cache SwiftPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Run tests
+        # Parity tests XCTSkip when reference .h5 files are absent (untracked).
+        run: ./Scripts/test.sh

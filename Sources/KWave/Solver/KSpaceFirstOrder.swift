@@ -213,6 +213,8 @@ private func kspaceFirstOrder1D(
 
     let fwd: (MLXArray) -> MLXArray = { MLXFFT.fft($0) }
     let inv: (MLXArray) -> MLXArray = { MLXFFT.ifft($0) }
+    let absorb = makeAbsorption(medium: medium, c0: c0Grid, rho0: rho0Grid, k: grid.k,
+                                fwd: fwd, inv: inv)
 
     var p = MLXArray.zeros(shape, dtype: .float32)
     var ux = MLXArray.zeros(shape, dtype: .float32)
@@ -234,8 +236,12 @@ private func kspaceFirstOrder1D(
         rhox = pmlX * (pmlX * rhox - dtRho0 * duxdx)
         if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Equation of state (linear, lossless).
-        p = c2Grid * rhox
+        // Equation of state: p = c0^2 * (rho + absorption - dispersion).
+        if let absorb {
+            p = c2Grid * (rhox + absorb.eosTerm(divU: duxdx, rho: rhox))
+        } else {
+            p = c2Grid * rhox
+        }
 
         // t=0 leapfrog override for an initial-pressure source.
         if t == 0, let f = p0Field {
@@ -339,6 +345,8 @@ private func kspaceFirstOrder2D(
 
     let fwd: (MLXArray) -> MLXArray = { MLXFFT.fft2($0) }
     let inv: (MLXArray) -> MLXArray = { MLXFFT.ifft2($0) }
+    let absorb = makeAbsorption(medium: medium, c0: c0Grid, rho0: rho0Grid, k: grid.k,
+                                fwd: fwd, inv: inv)
 
     var p = MLXArray.zeros(shape, dtype: .float32)
     var ux = MLXArray.zeros(shape, dtype: .float32)
@@ -368,8 +376,13 @@ private func kspaceFirstOrder2D(
         rhoy = pmlY * (pmlY * rhoy - dtRho0 * duydy)
         if let op = pOpY { rhoy = op.apply(rhoy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Equation of state (linear, lossless).
-        p = c2Grid * (rhox + rhoy)
+        // Equation of state: p = c0^2 * (rho + absorption - dispersion).
+        let rhoTotal = rhox + rhoy
+        if let absorb {
+            p = c2Grid * (rhoTotal + absorb.eosTerm(divU: duxdx + duydy, rho: rhoTotal))
+        } else {
+            p = c2Grid * rhoTotal
+        }
 
         // t=0 leapfrog override for an initial-pressure source.
         if t == 0, let f = p0Field {
@@ -484,6 +497,8 @@ private func kspaceFirstOrder3D(
 
     let fwd: (MLXArray) -> MLXArray = { MLXFFT.fftn($0) }
     let inv: (MLXArray) -> MLXArray = { MLXFFT.ifftn($0) }
+    let absorb = makeAbsorption(medium: medium, c0: c0Grid, rho0: rho0Grid, k: grid.k,
+                                fwd: fwd, inv: inv)
 
     var p = MLXArray.zeros(shape, dtype: .float32)
     var ux = MLXArray.zeros(shape, dtype: .float32)
@@ -521,8 +536,13 @@ private func kspaceFirstOrder3D(
         rhoz = pmlZ * (pmlZ * rhoz - dtRho0 * duzdz)
         if let op = pOpZ { rhoz = op.apply(rhoz, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Equation of state (linear, lossless).
-        p = c2Grid * (rhox + rhoy + rhoz)
+        // Equation of state: p = c0^2 * (rho + absorption - dispersion).
+        let rhoTotal = rhox + rhoy + rhoz
+        if let absorb {
+            p = c2Grid * (rhoTotal + absorb.eosTerm(divU: duxdx + duydy + duzdz, rho: rhoTotal))
+        } else {
+            p = c2Grid * rhoTotal
+        }
 
         if t == 0, let f = p0Field {
             p = f
@@ -589,4 +609,80 @@ private func staggerDensity(_ rho0: MLXArray, axis: Int) -> MLXArray {
     let avg = 0.5 * (m[0..<(n - 1)] + m[1..<n])
     let staggered = MLX.concatenated([avg, m[(n - 1)..<n]], axis: 0)
     return MLX.swappedAxes(staggered, axis, 0)
+}
+
+// MARK: - Power-law absorption / dispersion
+
+/// `|k|^power` fractional-Laplacian multiplier in k-space, with the DC bin forced to 0 (so a
+/// negative `power` doesn't produce `inf` there). Matches k-wave-python `_fractional_laplacian`.
+private func fractionalLaplacian(_ k: MLXArray, power: Double) -> MLXArray {
+    let kf = k.asType(.float32)
+    let raised = MLX.pow(kf, Float(power))
+    return MLX.which(kf .== 0, MLXArray(Float(0)), raised).asType(.float32)
+}
+
+/// Power-law / Stokes absorption and dispersion operators for the equation of state, mirroring
+/// k-wave-python `_init_absorption` / `_init_dispersion`. The EOS gains
+/// `+ absorption(div_u) - dispersion(rho)`; both terms are zero in the lossless case (`nil`).
+private struct PowerLawAbsorption {
+    let tau: MLXArray            // absorption coefficient on the grid.
+    let nabla1: MLXArray?        // |k|^(y-2); nil for Stokes (direct multiply, no FFT round-trip).
+    let eta: MLXArray?           // dispersion coefficient; nil when dispersion disabled.
+    let nabla2: MLXArray?        // |k|^(y-1) dispersion fractional Laplacian.
+    let rho0: MLXArray
+    let fwd: (MLXArray) -> MLXArray
+    let inv: (MLXArray) -> MLXArray
+
+    /// Spectral apply of a real fractional-Laplacian operator: `Re(ifft(op * fft(f)))`.
+    private func diff(_ f: MLXArray, _ op: MLXArray) -> MLXArray {
+        inv(op * fwd(f.asType(.complex64))).realPart()
+    }
+
+    /// `absorption(div_u) - dispersion(rho)`, the additive EOS contribution.
+    func eosTerm(divU: MLXArray, rho: MLXArray) -> MLXArray {
+        let absorption: MLXArray
+        if let nabla1 {
+            absorption = tau * diff(rho0 * divU, nabla1)   // full power-law
+        } else {
+            absorption = tau * rho0 * divU                 // Stokes
+        }
+        guard let eta, let nabla2 else { return absorption }
+        return absorption - eta * diff(rho, nabla2)
+    }
+}
+
+/// Build the absorption/dispersion operators for the medium, or `nil` when lossless
+/// (`alphaCoeff` absent or `alphaMode == .noAbsorption`). `c0`/`rho0` are the post-smoothing grids;
+/// `k` is the wavenumber magnitude; `fwd`/`inv` are the n-D FFT pair for this dimensionality.
+private func makeAbsorption(
+    medium: KWaveMedium, c0: MLXArray, rho0: MLXArray, k: MLXArray,
+    fwd: @escaping (MLXArray) -> MLXArray, inv: @escaping (MLXArray) -> MLXArray
+) -> PowerLawAbsorption? {
+    guard let alphaCoeff = medium.alphaCoeff, medium.alphaMode != .noAbsorption else { return nil }
+
+    var y = medium.alphaPower ?? 1.5
+    if medium.alphaMode == .stokes { y = 2.0 }
+    // db2neper is linear in alpha, so scale the dB/(MHz^y cm) coefficient to Np/((rad/s)^y m).
+    let alphaNp = alphaCoeff.asType(.float32) * Float(db2neper(1.0, y: y))
+    let isStokes = medium.alphaMode == .stokes || abs(y - 2.0) < 1e-10
+
+    let tau: MLXArray
+    let nabla1: MLXArray?
+    if isStokes {
+        tau = -2 * alphaNp * c0
+        nabla1 = nil
+    } else {
+        tau = -2 * alphaNp * MLX.pow(c0, Float(y - 1))
+        nabla1 = fractionalLaplacian(k, power: y - 2)
+    }
+
+    var eta: MLXArray? = nil
+    var nabla2: MLXArray? = nil
+    if !isStokes && medium.alphaMode != .noDispersion {
+        eta = 2 * alphaNp * MLX.pow(c0, Float(y)) * Float(tan(Double.pi * y / 2))
+        nabla2 = fractionalLaplacian(k, power: y - 1)
+    }
+
+    return PowerLawAbsorption(tau: tau, nabla1: nabla1, eta: eta, nabla2: nabla2,
+                              rho0: rho0, fwd: fwd, inv: inv)
 }

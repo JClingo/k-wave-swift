@@ -20,14 +20,26 @@ public struct RecordField: OptionSet, Sendable {
     public static let iMax    = RecordField(rawValue: 1 << 12)
 }
 
+/// 2D sensor directivity pattern (mirrors k-Wave `sensor.directivity_pattern`).
+public enum DirectivityPattern: Sendable {
+    /// Spatial averaging over the element face — a `sinc` response.
+    case pressure
+    /// Pressure-gradient detector response.
+    case gradient
+}
+
 /// Sensor / detector definition.
 public struct KWaveSensor {
     /// Binary mask (grid-shaped) selecting recording points, or Cartesian point coordinates.
     public var mask: MLXArray?
     public var record: RecordField
     public var timeReversalBoundaryData: MLXArray?
+    /// Grid-shaped matrix giving the direction of maximum response (radians) at each sensor point;
+    /// enables 2D sensor directivity when set.
     public var directivityAngle: MLXArray?
+    /// Equivalent element size (m); larger = more directional. Defaults to `10·max(dx,dy)`.
     public var directivitySize: Double?
+    public var directivityPattern: DirectivityPattern
     public var frequencyResponse: (centerFreq: Double, bandwidth: Double)?
 
     public init(
@@ -36,6 +48,7 @@ public struct KWaveSensor {
         timeReversalBoundaryData: MLXArray? = nil,
         directivityAngle: MLXArray? = nil,
         directivitySize: Double? = nil,
+        directivityPattern: DirectivityPattern = .pressure,
         frequencyResponse: (centerFreq: Double, bandwidth: Double)? = nil
     ) {
         self.mask = mask
@@ -43,6 +56,7 @@ public struct KWaveSensor {
         self.timeReversalBoundaryData = timeReversalBoundaryData
         self.directivityAngle = directivityAngle
         self.directivitySize = directivitySize
+        self.directivityPattern = directivityPattern
         self.frequencyResponse = frequencyResponse
     }
 }

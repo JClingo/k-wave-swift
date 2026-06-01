@@ -394,6 +394,7 @@ private func kspaceFirstOrder2D(
 
     let plan = RecordPlan(sensor.record)
     let sampler: SensorSampler? = sensor.mask.map { makeSensorSampler(mask: $0, grid: grid) }
+    let directivity = makeDirectivityFilter(sensor: sensor, grid: grid)
     let collocX = plan.recordU ? collocationOp(grid.kxVec, spacing: grid.dx).reshaped([nx, 1]) : nil
     let collocY = plan.recordU ? collocationOp(grid.kyVec, spacing: grid.dy).reshaped([1, ny]) : nil
     var pRec: [MLXArray] = [], uxRec: [MLXArray] = [], uyRec: [MLXArray] = []
@@ -437,7 +438,15 @@ private func kspaceFirstOrder2D(
         }
 
         if let sampler {
-            if plan.recordP { pRec.append(sampler.sample(p)) }
+            if plan.recordP {
+                if let directivity {
+                    let s = directivity.apply(pk: MLXFFT.fft2(p.asType(.complex64)))
+                    MLX.eval(s)
+                    pRec.append(s)
+                } else {
+                    pRec.append(sampler.sample(p))
+                }
+            }
             if plan.recordU {
                 let uxC = MLXFFT.ifft2(collocX! * MLXFFT.fft2(ux.asType(.complex64))).realPart()
                 let uyC = MLXFFT.ifft2(collocY! * MLXFFT.fft2(uy.asType(.complex64))).realPart()

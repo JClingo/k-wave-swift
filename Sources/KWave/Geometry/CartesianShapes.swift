@@ -1,6 +1,46 @@
 import Foundation
 import MLX
 
+/// Binary 2D arc on a grid, mirroring k-Wave `makeArc` (finite radius). The arc lies on the circle
+/// of curvature `radius` passing through `arcPos` (its midpoint), oriented so the focus is at
+/// `focusPos`; points subtending more than `asin(diameter/2/radius)` from the midpoint are removed.
+///
+/// Positions are 0-based grid indices (consistent with `makeCircle`). `diameter` must be a positive
+/// odd number of grid points and `≤ 2·radius`. The infinite-radius (straight-line) case is not
+/// supported.
+public func makeArc(
+    nx: Int, ny: Int, arcPos: (x: Int, y: Int), radius: Double, diameter: Int, focusPos: (x: Int, y: Int)
+) -> MLXArray {
+    precondition(radius.isFinite && radius > 0, "radius must be positive and finite")
+    precondition(diameter > 0 && diameter % 2 == 1, "diameter must be a positive odd number of grid points")
+    precondition(Double(diameter) <= 2 * radius, "diameter must be ≤ 2·radius")
+    precondition((arcPos.x, arcPos.y) != (focusPos.x, focusPos.y), "focusPos must differ from arcPos")
+
+    let (ax, ay) = arcPos, (fx, fy) = focusPos
+    let halfArcAngle = asin(Double(diameter) / 2 / radius)
+
+    // Centre of the circle of curvature (banker's rounding to match Python `round`).
+    let distCF = (Double((ax - fx) * (ax - fx) + (ay - fy) * (ay - fy))).squareRoot()
+    let cx = Int((radius / distCF * Double(fx - ax) + Double(ax)).rounded(.toNearestOrEven))
+    let cy = Int((radius / distCF * Double(fy - ay) + Double(ay)).rounded(.toNearestOrEven))
+
+    var host = makeCircle(nx: nx, ny: ny, cx: cx, cy: cy, radius: radius)
+        .reshaped([nx * ny]).asArray(Float.self)
+
+    // Remove circle points subtending more than the half-arc angle from the midpoint.
+    let v1x = Double(ax - cx), v1y = Double(ay - cy)
+    let l1 = (v1x * v1x + v1y * v1y).squareRoot()
+    for px in 0..<nx {
+        for py in 0..<ny where host[px * ny + py] != 0 {
+            let v2x = Double(px - cx), v2y = Double(py - cy)
+            let l2 = (v2x * v2x + v2y * v2y).squareRoot()
+            let theta = acos((v1x * v2x + v1y * v2y) / (l1 * l2))
+            if theta > halfArcAngle { host[px * ny + py] = 0 }
+        }
+    }
+    return MLXArray(host).reshaped([nx, ny])
+}
+
 /// Cartesian coordinates of points evenly distributed on a circle or arc, mirroring k-Wave
 /// `makeCartCircle`. Returns a `[2, numPoints]` array (row 0 = x, row 1 = y) suitable for use as a
 /// Cartesian sensor/source mask.

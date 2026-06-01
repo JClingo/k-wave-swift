@@ -44,4 +44,30 @@ final class ParityCartShapesTests: XCTestCase {
         assertClose(makeCartRect(center: (1e-3, 2e-3), lx: 4e-3, ly: 2e-3, theta: 30, numPoints: 50),
                     rrData, rrShape, "rect_rot")
     }
+
+    func testMakeArcParity() throws {
+        let arcRef = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/parity/reference_arc.h5").path
+        guard FileManager.default.fileExists(atPath: arcRef) else {
+            throw XCTSkip("reference not generated")
+        }
+        let f = try HDF5File(open: arcRef)
+        let nx = Int(try f.readFloatDataset("Nx").data[0])
+        let ny = Int(try f.readFloatDataset("Ny").data[0])
+        let ax = Int(try f.readFloatDataset("ax").data[0])
+        let ay = Int(try f.readFloatDataset("ay").data[0])
+        let fx = Int(try f.readFloatDataset("fx").data[0])
+        let fy = Int(try f.readFloatDataset("fy").data[0])
+        let radius = Double(try f.readFloatDataset("radius").data[0])
+        let diameter = Int(try f.readFloatDataset("diameter").data[0])
+        let (arcShape, arcData) = try f.readFloatDataset("arc")
+
+        // Python positions are 1-based; makeArc takes 0-based grid indices.
+        let mine = makeArc(nx: nx, ny: ny, arcPos: (ax - 1, ay - 1), radius: radius,
+                           diameter: diameter, focusPos: (fx - 1, fy - 1))
+        let ref = MLXArray(arcData).reshaped(arcShape)
+        XCTAssertEqual(mine.shape, arcShape)
+        XCTAssertEqual(MLX.max(MLX.abs(mine - ref)).item(Float.self), 0, "arc: exact binary match")
+    }
 }

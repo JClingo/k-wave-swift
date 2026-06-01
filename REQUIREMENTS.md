@@ -387,7 +387,7 @@ All return binary masks (`MLXArray`) on a grid:
 | `makeCircle` | Circle perimeter in 2D | P0 |
 | `makeBall` | Filled sphere in 3D | P0 |
 | `makeSphere` | Sphere surface in 3D | P0 |
-| `makeArc` | Arc in 2D | P1 |
+| `makeArc` | Arc in 2D | ✅ `Geometry/CartesianShapes.swift` (finite radius); parity-tested |
 | `makeBowl` | Bowl surface in 3D | P1 |
 | `makeLine` | Line segment in 2D/3D | P1 |
 | `makeSphericalSection` | Spherical cap in 3D | P1 |

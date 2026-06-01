@@ -398,12 +398,12 @@ All return binary masks (`MLXArray`) on a grid:
 
 | Function | Description | Priority |
 |---|---|---|
-| `makeCartCircle` | Cartesian circle points | P1 |
+| `makeCartCircle` | Cartesian circle/arc points | ✅ `Geometry/CartesianShapes.swift`; parity-tested |
 | `makeCartSphere` | Cartesian sphere points | P1 |
-| `makeCartArc` | Cartesian arc points | P1 |
+| `makeCartArc` | Cartesian arc points | P1 (needs `compute_linear_transform2D`) |
 | `makeCartBowl` | Cartesian bowl points | P1 |
-| `makeCartDisc` | Cartesian disc points | P1 |
-| `makeCartRect` | Cartesian rectangle points | P1 |
+| `makeCartDisc` | Cartesian disc points | P1 (spiral/concentric packing) |
+| `makeCartRect` | Cartesian rectangle points (2D) | ✅ `Geometry/CartesianShapes.swift`; parity-tested |
 
 ### 4.3 Grid and Matrix Utilities
 

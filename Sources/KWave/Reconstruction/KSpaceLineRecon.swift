@@ -3,17 +3,23 @@ import MLX
 import MLXFFT
 
 /// Centered (monotonic) angular wavenumber axis, matching k-Wave `kgrid.kx` = `fftshift(2π·fftfreq)`.
-private func centeredWavenumber(_ n: Int, _ d: Double) -> [Double] {
+func centeredWavenumber(_ n: Int, _ d: Double) -> [Double] {
     let nat = wavenumberVector(n, d: d)            // FFT-natural order.
     let shift = n / 2                              // fftshift.
     return (0..<n).map { nat[(($0 - shift) % n + n) % n] }
 }
 
-private func fftShift2(_ x: MLXArray) -> MLXArray {
-    MLX.roll(MLX.roll(x, shift: x.dim(0) / 2, axis: 0), shift: x.dim(1) / 2, axis: 1)
+/// `fftshift` over every axis (DC to centre), via per-axis roll by `dim/2`.
+func fftShiftAll(_ x: MLXArray) -> MLXArray {
+    var r = x
+    for a in 0..<x.ndim { r = MLX.roll(r, shift: r.dim(a) / 2, axis: a) }
+    return r
 }
-private func ifftShift2(_ x: MLXArray) -> MLXArray {
-    MLX.roll(MLX.roll(x, shift: -(x.dim(0) / 2), axis: 0), shift: -(x.dim(1) / 2), axis: 1)
+/// Inverse of `fftShiftAll` (roll each axis by `-(dim/2)`).
+func ifftShiftAll(_ x: MLXArray) -> MLXArray {
+    var r = x
+    for a in 0..<x.ndim { r = MLX.roll(r, shift: -(r.dim(a) / 2), axis: a) }
+    return r
 }
 
 /// Photoacoustic FFT-based line reconstruction, mirroring k-wave-python `kspaceLineRecon`.
@@ -66,7 +72,7 @@ public func kspaceLineRecon(
     let sf = MLXArray(sfHost).reshaped([nt, ny]).asType(.complex64)
 
     // FFT of the (centered) mirrored data, scaled: p(ω, ky).
-    let pSpec = sf * fftShift2(MLXFFT.fft2(ifftShift2(mirrored.asType(.complex64))))
+    let pSpec = sf * fftShiftAll(MLXFFT.fft2(ifftShiftAll(mirrored.asType(.complex64))))
 
     // Nearest-neighbour remap (ω, ky) → (kx, ky): along ky the query matches the grid exactly, so
     // only the ω/kx axis is interpolated. The index map is data-independent, so precompute it.
@@ -94,7 +100,7 @@ public func kspaceLineRecon(
     let pInterp = MLX.which(oob .!= 0, MLXArray(Float(0)).asType(.complex64), gathered)
 
     // Inverse FFT to p(x, y); keep the non-negative-time half; correct scaling.
-    var out = fftShift2(MLXFFT.ifft2(ifftShift2(pInterp))).realPart()
+    var out = fftShiftAll(MLXFFT.ifft2(ifftShiftAll(pInterp))).realPart()
     out = out[(nt / 2)..<nt, 0..<ny]
     out = Float(4.0 / c) * out
     if posCond { out = MLX.maximum(out, MLXArray(Float(0))) }

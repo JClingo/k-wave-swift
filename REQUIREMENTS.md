@@ -853,7 +853,7 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 4. ❌ `KWaveTransducer` (linear array model) → `Transducer/KWaveTransducer.swift`
 5. 🚧 Grid geometry: ✅ `makeArc` (finite radius) · ❌ `makeLine` (python-port bug), `makeBowl`, `makeMultiArc` (label-index bug), `makeMultiBowl`, `makeSphericalSection`
 6. 🚧 Cartesian geometry: ✅ `makeCartCircle`, `makeCartSphere`, `makeCartArc`, `makeCartRect` (2D) · ❌ `makeCartBowl`, `makeCartDisc` (spiral packing) → `Geometry/CartesianShapes.swift`
-7. 🚧 Reconstruction: ✅ `kspaceLineRecon` (2D, nearest interp; `Reconstruction/KSpaceLineRecon.swift`; parity-tested) · ❌ `kspacePlaneRecon` (3D)
+7. ✅ Reconstruction: `kspaceLineRecon` (2D) + `kspacePlaneRecon` (3D), nearest interp; `Reconstruction/`; parity-tested
 8. 🚧 Signal processing: ✅ `spect`, `extractAmpPhase` (1D; `Signal/Spectrum.swift`; parity-tested) · ❌ `addNoise`, `createCWSignals`, `logCompression`, `envelopeDetection`, `gradientFD`, `gradientSpect`
 9. 🚧 Material properties: ✅ `waterSoundSpeed`, `waterDensity`, `waterAbsorption`, `waterNonlinearity` (`Material/WaterProperties.swift`), `powerLawKramersKronig` (`Material/PowerLaw.swift`) — parity-tested · ❌ `fitPowerLawParams` (scipy `fmin` — fragile parity)
 10. ❌ Visualization: `SimulationDisplay`, `beamPlot`, `flyThrough`, `overlayPlot`, `stackedPlot` → `Viz/FieldDisplay.swift`, `Viz/Plots.swift`

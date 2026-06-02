@@ -855,7 +855,7 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 6. 🚧 Cartesian geometry: ✅ `makeCartCircle`, `makeCartSphere`, `makeCartArc`, `makeCartRect` (2D) · ❌ `makeCartBowl`, `makeCartDisc` (spiral packing) → `Geometry/CartesianShapes.swift`
 7. 🚧 Reconstruction: ✅ `kspaceLineRecon` (2D, nearest interp; `Reconstruction/KSpaceLineRecon.swift`; parity-tested) · ❌ `kspacePlaneRecon` (3D)
 8. ❌ Signal processing: `addNoise`, `createCWSignals`, `extractAmpPhase`, `logCompression`, `envelopeDetection`, `gradientFD`, `gradientSpect`, `spect` → `Signal/Processing.swift`
-9. ❌ Material properties: `waterSoundSpeed`, `waterDensity`, `waterAbsorption`, `waterNonlinearity`, `fitPowerLawParams` → `Material/Properties.swift`
+9. 🚧 Material properties: ✅ `waterSoundSpeed`, `waterDensity`, `waterAbsorption`, `waterNonlinearity` (`Material/WaterProperties.swift`; parity-tested) · ❌ `fitPowerLawParams`
 10. ❌ Visualization: `SimulationDisplay`, `beamPlot`, `flyThrough`, `overlayPlot`, `stackedPlot` → `Viz/FieldDisplay.swift`, `Viz/Plots.swift`
 11. ❌ CLI tool → `kwave-cli/main.swift`
 12. ❌ SwiftUI dashboard prototype

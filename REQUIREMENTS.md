@@ -399,8 +399,8 @@ All return binary masks (`MLXArray`) on a grid:
 | Function | Description | Priority |
 |---|---|---|
 | `makeCartCircle` | Cartesian circle/arc points | ✅ `Geometry/CartesianShapes.swift`; parity-tested |
-| `makeCartSphere` | Cartesian sphere points | P1 |
-| `makeCartArc` | Cartesian arc points | P1 (needs `compute_linear_transform2D`) |
+| `makeCartSphere` | Cartesian sphere points | ✅ `Geometry/CartesianShapes.swift` (Golden Section Spiral); parity-tested |
+| `makeCartArc` | Cartesian arc points | ✅ `Geometry/CartesianShapes.swift`; parity-tested |
 | `makeCartBowl` | Cartesian bowl points | P1 |
 | `makeCartDisc` | Cartesian disc points | P1 (spiral/concentric packing) |
 | `makeCartRect` | Cartesian rectangle points (2D) | ✅ `Geometry/CartesianShapes.swift`; parity-tested |

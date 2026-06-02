@@ -45,6 +45,33 @@ final class ParityCartShapesTests: XCTestCase {
                     rrData, rrShape, "rect_rot")
     }
 
+    func testMakeCartArcParity() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/parity/reference_cartarc.h5").path
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_shapes.py")
+        }
+        let f = try HDF5File(open: path)
+        let (aShape, aData) = try f.readFloatDataset("arc")
+        assertClose(makeCartArc(arcPos: (0, 0), radius: 8e-3, diameter: 6e-3,
+                                focusPos: (0, 10e-3), numPoints: 25),
+                    aData, aShape, "cart_arc")
+    }
+
+    func testMakeCartSphereParity() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/parity/reference_cartsphere.h5").path
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_shapes.py")
+        }
+        let f = try HDF5File(open: path)
+        let (sShape, sData) = try f.readFloatDataset("sphere")
+        assertClose(makeCartSphere(radius: 5e-3, numPoints: 40, center: (1e-3, -2e-3, 3e-3)),
+                    sData, sShape, "cart_sphere")
+    }
+
     func testMakeArcParity() throws {
         let arcRef = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

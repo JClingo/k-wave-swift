@@ -67,6 +67,62 @@ public func makeCartCircle(
     return MLXArray(data).reshaped([2, numPoints])
 }
 
+/// Cartesian coordinates of points evenly distributed over an arc, mirroring k-Wave `makeCartArc`.
+/// The arc midpoint is `arcPos`, oriented so the focus lies at `focusPos`; the opening is `diameter`
+/// and the radius of curvature is `radius` (use `.infinity` for a straight line). Returns a
+/// `[2, numPoints]` array. The first/last points are offset inward by half the angular spacing.
+public func makeCartArc(
+    arcPos: (x: Double, y: Double), radius: Double, diameter: Double,
+    focusPos: (x: Double, y: Double), numPoints: Int
+) -> MLXArray {
+    precondition(numPoints > 0 && diameter > 0, "numPoints and diameter must be positive")
+    precondition((arcPos.x, arcPos.y) != (focusPos.x, focusPos.y), "focusPos must differ from arcPos")
+    let r = radius.isInfinite ? 1e10 * diameter : radius
+    precondition(r > 0 && diameter <= 2 * r, "diameter must be ≤ 2·radius")
+
+    let varphiMax = asin(diameter / (2 * r))
+    let dvarphi = 2 * varphiMax / Double(numPoints)
+    let t0 = -varphiMax + dvarphi / 2, t1 = varphiMax - dvarphi / 2
+
+    // compute_linear_transform2D: rotate canonical arc (back on +y axis) to the beam orientation.
+    let bx = focusPos.x - arcPos.x, by = focusPos.y - arcPos.y
+    let bn = (bx * bx + by * by).squareRoot()
+    let bvx = bx / bn, bvy = by / bn
+    let theta = atan2(bvy, bvx) - atan2(-1, 0)   // canonical beam_vec0 = [0, -1].
+    let cT = cos(theta), sT = sin(theta)
+    let offX = arcPos.x + r * bvx, offY = arcPos.y + r * bvy
+
+    var data = [Float](repeating: 0, count: 2 * numPoints)
+    for i in 0..<numPoints {
+        let t = numPoints == 1 ? t0 : t0 + (t1 - t0) * Double(i) / Double(numPoints - 1)
+        let p0x = r * sin(t), p0y = r * cos(t)
+        data[i] = Float(cT * p0x - sT * p0y + offX)
+        data[numPoints + i] = Float(sT * p0x + cT * p0y + offY)
+    }
+    return MLXArray(data).reshaped([2, numPoints])
+}
+
+/// Cartesian coordinates of points distributed over a sphere via the Golden Section Spiral,
+/// mirroring k-Wave `makeCartSphere`. Returns a `[3, numPoints]` array (rows x, y, z).
+public func makeCartSphere(
+    radius: Double, numPoints: Int, center: (x: Double, y: Double, z: Double) = (0, 0, 0)
+) -> MLXArray {
+    precondition(numPoints > 0, "numPoints must be positive")
+    let inc = Double.pi * (3 - 5.0.squareRoot())
+    let off = 2.0 / Double(numPoints)
+
+    var data = [Float](repeating: 0, count: 3 * numPoints)
+    for k in 0..<numPoints {
+        let y = Double(k) * off - 1 + off / 2
+        let r = (1 - y * y).squareRoot()
+        let phi = Double(k) * inc
+        data[k] = Float(radius * cos(phi) * r + center.x)
+        data[numPoints + k] = Float(radius * y + center.y)
+        data[2 * numPoints + k] = Float(radius * sin(phi) * r + center.z)
+    }
+    return MLXArray(data).reshaped([3, numPoints])
+}
+
 /// Cartesian coordinates of points evenly distributed over a (optionally rotated) rectangle in 2D,
 /// mirroring k-Wave `makeCartRect`. Returns a `[2, npts]` array where `npts = ceil(sqrt(numPoints·
 /// Lx/Ly)) · ceil(numPoints / that)` (k-Wave rounds up to a full grid).

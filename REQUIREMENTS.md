@@ -848,11 +848,11 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 ### Phase 3: Extended Features (P1) — ❌ Not started
 
 1. ❌ Axisymmetric solver `kspaceFirstOrderAS` → `Solver/Axisymmetric.swift`
-2. ❌ CW propagation: `acousticFieldPropagator`, `angularSpectrumCW` → `Solver/CW.swift`
+2. 🚧 CW propagation: ✅ `angularSpectrumCW` (`Solver/AngularSpectrum.swift`, lossless; parity-tested) · ❌ `acousticFieldPropagator` (no NumPy oracle), broadband `angularSpectrum`, absorption/grid-expansion
 3. ❌ `KWaveArray` (off-grid transducer arrays) → `Array/KWaveArray.swift`
 4. ❌ `KWaveTransducer` (linear array model) → `Transducer/KWaveTransducer.swift`
-5. ❌ Remaining grid geometry: `makeArc`, `makeLine`, `makeBowl`, `makeMultiArc`, `makeMultiBowl`, `makeSphericalSection` → add to `Geometry/Shapes.swift`
-6. ❌ Cartesian geometry: `makeCartCircle`, `makeCartSphere`, `makeCartArc`, `makeCartBowl`, `makeCartDisc`, `makeCartRect` → `Geometry/Cartesian.swift`
+5. 🚧 Grid geometry: ✅ `makeArc` (finite radius) · ❌ `makeLine` (python-port bug), `makeBowl`, `makeMultiArc` (label-index bug), `makeMultiBowl`, `makeSphericalSection`
+6. 🚧 Cartesian geometry: ✅ `makeCartCircle`, `makeCartSphere`, `makeCartArc`, `makeCartRect` (2D) · ❌ `makeCartBowl`, `makeCartDisc` (spiral packing) → `Geometry/CartesianShapes.swift`
 7. ❌ Reconstruction: `kspaceLineRecon`, `kspacePlaneRecon` → `Reconstruction/FFTRecon.swift`
 8. ❌ Signal processing: `addNoise`, `createCWSignals`, `extractAmpPhase`, `logCompression`, `envelopeDetection`, `gradientFD`, `gradientSpect`, `spect` → `Signal/Processing.swift`
 9. ❌ Material properties: `waterSoundSpeed`, `waterDensity`, `waterAbsorption`, `waterNonlinearity`, `fitPowerLawParams` → `Material/Properties.swift`

@@ -849,7 +849,7 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 
 1. ❌ Axisymmetric solver `kspaceFirstOrderAS` → `Solver/Axisymmetric.swift`
 2. 🚧 CW propagation: ✅ `angularSpectrumCW` (`Solver/AngularSpectrum.swift`, lossless; parity-tested) · ❌ `acousticFieldPropagator` (no NumPy oracle), broadband `angularSpectrum`, absorption/grid-expansion
-3. ❌ `KWaveArray` (off-grid transducer arrays) → `Array/KWaveArray.swift`
+3. 🚧 `KWaveArray` (off-grid transducer arrays): ✅ `offGridPoints` exact BLI spreading (`Array/OffGridPoints.swift`; parity-tested) · ❌ `tol_star` truncated path, element integration, `getArrayGridWeights`
 4. ❌ `KWaveTransducer` (linear array model) → `Transducer/KWaveTransducer.swift`
 5. 🚧 Grid geometry: ✅ `makeArc` (finite radius) · ❌ `makeLine` (python-port bug), `makeBowl`, `makeMultiArc` (label-index bug), `makeMultiBowl`, `makeSphericalSection`
 6. 🚧 Cartesian geometry: ✅ `makeCartCircle`, `makeCartSphere`, `makeCartArc`, `makeCartRect` (2D) · ❌ `makeCartBowl`, `makeCartDisc` (spiral packing) → `Geometry/CartesianShapes.swift`

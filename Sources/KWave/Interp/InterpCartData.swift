@@ -29,6 +29,38 @@ func grid2cart(grid: KWaveGrid, mask: MLXArray) -> (coords: [[Double]], flatIndi
     return (coords, flatIndices)
 }
 
+/// Binary grid mask of the nearest grid nodes to a set of Cartesian points, mirroring the primary
+/// output of k-wave-python `cart2grid` (2D/3D). Each point maps to node `round(coord/d) + N/2`
+/// (banker's rounding, matching numpy `round`); points sharing a node collapse to one.
+///
+/// The `order_index`/`reorder_index` outputs are not ported (they carry upstream F/C-order and
+/// 0/1-based quirks); use `grid2cart` for the reverse mapping with consistent ordering.
+///
+/// - Parameter cartData: `[dim, numPoints]` Cartesian coordinates [m].
+/// - Returns: grid-shaped binary mask (`1` at occupied nodes).
+public func cart2grid(grid: KWaveGrid, cartData: MLXArray) -> MLXArray {
+    precondition(grid.dim == 2 || grid.dim == 3, "cart2grid supports 2D and 3D")
+    precondition(cartData.ndim == 2 && cartData.dim(0) == grid.dim, "cartData must be [dim, numPoints]")
+    let dim = grid.dim
+    let nPts = cartData.dim(1)
+    let host = cartData.reshaped([dim * nPts]).asArray(Float.self)
+    func coord(_ axis: Int, _ p: Int) -> Double { Double(host[axis * nPts + p]) }
+    let dims = grid.size
+    let spacing = grid.spacing
+
+    var mask = [Float](repeating: 0, count: dims.reduce(1, *))
+    for p in 0..<nPts {
+        var flat = 0
+        for axis in 0..<dim {
+            let idx = Int((coord(axis, p) / spacing[axis]).rounded(.toNearestOrEven)) + dims[axis] / 2
+            precondition(idx >= 0 && idx < dims[axis], "Cartesian point outside grid (axis \(axis))")
+            flat = flat * dims[axis] + idx
+        }
+        mask[flat] = 1
+    }
+    return MLXArray(mask).reshaped(dims)
+}
+
 /// Interpolation mode for `interpCartData`.
 public enum CartInterp: Sendable { case nearest }
 

@@ -409,7 +409,7 @@ All return binary masks (`MLXArray`) on a grid:
 
 | Function | Description | Priority |
 |---|---|---|
-| `cart2grid` | Map Cartesian points onto grid | P0 |
+| `cart2grid` | Map Cartesian points onto grid | ✅ binary mask 2D/3D (`Interp/InterpCartData.swift`); parity-tested |
 | `grid2cart` | Extract Cartesian coords from grid mask | P0 |
 | `expandMatrix` | Expand matrix with boundary conditions | P0 |
 | `resize` | Resize matrix (interpolation) | P0 |

@@ -45,4 +45,30 @@ final class ParityOffGridTests: XCTestCase {
         let mine3 = offGridPoints(grid: g3, points: MLXArray(pts3Data).reshaped(pts3Shape), scale: scale3)
         assertClose(mine3, m3Data, m3Shape, "3D")
     }
+
+    /// Truncated-sinc path (`bli_tolerance = 0.1`, k-Wave's default — the `kWaveArray` path),
+    /// against the working python `off_grid_points` default path (a true oracle, unlike the
+    /// broken exact path). One 2D point lies on-grid in y, exercising the tolStar axis collapse.
+    func testOffGridPointsTruncatedParity() throws {
+        guard FileManager.default.fileExists(atPath: refPath) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_offgrid.py")
+        }
+        let f = try HDF5File(open: refPath)
+
+        let (pts2Shape, pts2Data) = try f.readFloatDataset("pts2")
+        let scale2 = try f.readFloatDataset("scale2").data.map { Double($0) }
+        let (m2Shape, m2Data) = try f.readFloatDataset("m2_tol")
+        let g2 = KWaveGrid(nx: 40, dx: 1e-4, ny: 32, dy: 1e-4)
+        let mine2 = offGridPoints(grid: g2, points: MLXArray(pts2Data).reshaped(pts2Shape),
+                                  scale: scale2, bliTolerance: 0.1)
+        assertClose(mine2, m2Data, m2Shape, "2D tol")
+
+        let (pts3Shape, pts3Data) = try f.readFloatDataset("pts3")
+        let scale3 = try f.readFloatDataset("scale3").data.map { Double($0) }
+        let (m3Shape, m3Data) = try f.readFloatDataset("m3_tol")
+        let g3 = KWaveGrid(nx: 24, dx: 1e-4, ny: 20, dy: 1e-4, nz: 16, dz: 1e-4)
+        let mine3 = offGridPoints(grid: g3, points: MLXArray(pts3Data).reshaped(pts3Shape),
+                                  scale: scale3, bliTolerance: 0.1)
+        assertClose(mine3, m3Data, m3Shape, "3D tol")
+    }
 }

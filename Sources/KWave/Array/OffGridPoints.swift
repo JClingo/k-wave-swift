@@ -25,17 +25,116 @@ private func deltaBLI(_ n: Int, _ d: Double, _ x0: Double) -> [Float] {
     }
 }
 
+/// Unnormalized sinc `sin(x)/x` (==1 at 0), matching k-wave-python `sinc` (= `np.sinc(x/π)`).
+private func sincU(_ x: Double) -> Double { x == 0 ? 1 : sin(x) / x }
+
+/// Grid-node offsets of the truncated-BLI "star" around a point, ported from k-Wave MATLAB
+/// `tolStar.m`: all per-axis offsets in `[-d, d]` (with `d = ceil(1/(π·tol))`) whose product of
+/// magnitudes is `≤ d`; collapsed to the zero-offset plane in any axis where the point lies on a
+/// grid node (the sinc is exactly zero at the other nodes); shifted to the nearest node and
+/// clipped to the grid.
+private func tolStarNodes(
+    tolerance: Double, grid: KWaveGrid, point: [Double]
+) -> [[Int]] {
+    let dim = grid.dim
+    let decay = Int(ceil(1 / (.pi * tolerance)))
+    let onGridThreshold = grid.dx * 1e-3
+    let dims = grid.size
+    let spacing = grid.spacing
+
+    // Per-axis nearest node and on-grid flag.
+    var closest = [Int](repeating: 0, count: dim)
+    var onGrid = [Bool](repeating: false, count: dim)
+    for axis in 0..<dim {
+        let axisCoords = centeredAxis(dims[axis], spacing[axis])
+        var best = 0, bestD = Double.greatestFiniteMagnitude
+        for (i, c) in axisCoords.enumerated() where abs(c - point[axis]) < bestD {
+            bestD = abs(c - point[axis]); best = i
+        }
+        closest[axis] = best
+        onGrid[axis] = bestD < onGridThreshold
+    }
+
+    // Canonical star offsets, with on-grid axes collapsed to offset 0.
+    let axisRange = (-decay...decay).map { $0 }
+    var offsets: [[Int]] = [[]]
+    for axis in 0..<dim {
+        let choices = onGrid[axis] ? [0] : axisRange
+        offsets = offsets.flatMap { prefix in choices.map { prefix + [$0] } }
+    }
+    return offsets.compactMap { off -> [Int]? in
+        // Star shape: |i·j·k| ≤ decay (no filter in 1D; zero offsets always pass).
+        guard off.count == 1 || abs(off.reduce(1, *)) <= decay else { return nil }
+        var node = [Int](repeating: 0, count: dim)
+        for axis in 0..<dim {
+            let idx = closest[axis] + off[axis]
+            guard idx >= 0 && idx < dims[axis] else { return nil }
+            node[axis] = idx
+        }
+        return node
+    }
+}
+
 /// Distribute off-grid source points onto the grid using a band-limited (sinc) interpolant,
-/// mirroring k-wave-python `off_grid_points` with `bli_type="exact"` (the
-/// exact, full-grid evaluation). Each point contributes a separable sinc, scaled and summed.
+/// mirroring k-wave-python `off_grid_points`. With `bliTolerance == 0` this is the exact periodic
+/// BLI (`bli_type="exact"`, full-grid evaluation); with `bliTolerance > 0` (k-Wave's default is
+/// 0.1) each point contributes a plain truncated sinc evaluated only on its `tolStar` neighbour
+/// nodes — much sparser, and the path `kWaveArray` uses.
 ///
 /// This is the off-grid spreading primitive underlying `kWaveArray` source/sensor weighting.
 ///
 /// - Parameters:
 ///   - points: off-grid coordinates `[dim, numPoints]` [m] (centered-axis convention).
 ///   - scale: per-point weight; `nil` = all ones, or a single value applied to all points.
+///   - bliTolerance: relative BLI truncation tolerance in (0, 1), or 0 for the exact BLI.
 /// - Returns: grid-shaped source mask (`[Nx]`, `[Nx, Ny]`, or `[Nx, Ny, Nz]`).
-public func offGridPoints(grid: KWaveGrid, points: MLXArray, scale: [Double]? = nil) -> MLXArray {
+public func offGridPoints(grid: KWaveGrid, points: MLXArray, scale: [Double]? = nil,
+                          bliTolerance: Double = 0) -> MLXArray {
+    precondition(bliTolerance >= 0 && bliTolerance < 1, "bliTolerance must be in [0, 1)")
+    if bliTolerance > 0 {
+        return offGridPointsTruncated(grid: grid, points: points, scale: scale,
+                                      tolerance: bliTolerance)
+    }
+    return offGridPointsExact(grid: grid, points: points, scale: scale)
+}
+
+/// Truncated-sinc evaluation on tolStar neighbour nodes, accumulated on the host.
+private func offGridPointsTruncated(
+    grid: KWaveGrid, points: MLXArray, scale: [Double]?, tolerance: Double
+) -> MLXArray {
+    precondition(points.ndim == 2 && points.dim(0) == grid.dim, "points must be [dim, numPoints]")
+    let dim = grid.dim
+    let nPts = points.dim(1)
+    let host = points.reshaped([dim * nPts]).asArray(Float.self)
+    let weights = normalizedScale(scale, nPts)
+    let dims = grid.size
+    let spacing = grid.spacing
+    let axes = (0..<dim).map { centeredAxis(dims[$0], spacing[$0]) }
+
+    var mask = [Float](repeating: 0, count: dims.reduce(1, *))
+    for p in 0..<nPts {
+        let point = (0..<dim).map { Double(host[$0 * nPts + p]) }
+        for node in tolStarNodes(tolerance: tolerance, grid: grid, point: point) {
+            var w = weights[p]
+            var flat = 0
+            for axis in 0..<dim {
+                w *= sincU(.pi / spacing[axis] * (axes[axis][node[axis]] - point[axis]))
+                flat = flat * dims[axis] + node[axis]
+            }
+            mask[flat] += Float(w)
+        }
+    }
+    return MLXArray(mask).reshaped(dims)
+}
+
+private func normalizedScale(_ scale: [Double]?, _ nPts: Int) -> [Double] {
+    guard let scale else { return [Double](repeating: 1, count: nPts) }
+    precondition(scale.count == 1 || scale.count == nPts, "scale must be scalar or per-point")
+    return scale.count == 1 ? [Double](repeating: scale[0], count: nPts) : scale
+}
+
+/// Exact (periodic) BLI evaluated over the full grid.
+private func offGridPointsExact(grid: KWaveGrid, points: MLXArray, scale: [Double]?) -> MLXArray {
     precondition(points.ndim == 2 && points.dim(0) == grid.dim,
                  "points must be [dim, numPoints]")
     let dim = grid.dim

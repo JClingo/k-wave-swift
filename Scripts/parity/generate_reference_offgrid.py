@@ -20,6 +20,7 @@ Nx, Ny, dx = 40, 32, 1e-4
 g2 = kWaveGrid(Vector([Nx, Ny]), Vector([dx, dx]))
 xv, yv = g2.x_vec.squeeze(), g2.y_vec.squeeze()
 pts2 = np.array([[3.7e-4, -5.2e-4, 1.1e-4], [-2.3e-4, 4.8e-4, 0.0]])
+pts2 = pts2.astype(np.float32).astype(np.float64)
 scale2 = np.array([1.0, 0.5, 2.0])
 m2 = np.zeros((Nx, Ny))
 for p in range(pts2.shape[1]):
@@ -31,7 +32,11 @@ for p in range(pts2.shape[1]):
 N3 = (24, 20, 16)
 g3 = kWaveGrid(Vector(list(N3)), Vector([1e-4, 1e-4, 1e-4]))
 xv3, yv3, zv3 = g3.x_vec.squeeze(), g3.y_vec.squeeze(), g3.z_vec.squeeze()
-pts3 = np.array([[2.1e-4, -1.5e-4], [-3.3e-4, 2.2e-4], [1.7e-4, -0.9e-4]])
+# Avoid half-grid coordinates (e.g. -1.5e-4): the nearest-node choice in tol_star sits on a
+# float-rounding knife edge there and flips between float64 and float32 inputs. Points are also
+# rounded through float32 so the reference is computed from exactly the values Swift reads.
+pts3 = np.array([[2.1e-4, -1.6e-4], [-3.3e-4, 2.2e-4], [1.7e-4, -0.9e-4]])
+pts3 = pts3.astype(np.float32).astype(np.float64)
 scale3 = np.array([1.0, 0.75])
 m3 = np.zeros(N3)
 for p in range(pts3.shape[1]):
@@ -39,6 +44,12 @@ for p in range(pts3.shape[1]):
     by = get_delta_bli(N3[1], 1e-4, yv3, pts3[1, p])
     bz = get_delta_bli(N3[2], 1e-4, zv3, pts3[2, p])
     m3 += scale3[p] * (bx[:, None, None] * by[None, :, None] * bz[None, None, :])
+
+# --- truncated path (bli_tolerance = 0.1, k-Wave default) — off_grid_points works here ---------
+from kwave.utils.kwave_array import off_grid_points
+
+m2_tol = off_grid_points(g2, pts2, scale=scale2, bli_tolerance=0.1, bli_type="sinc")
+m3_tol = off_grid_points(g3, pts3, scale=scale3, bli_tolerance=0.1, bli_type="sinc")
 
 ref = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_offgrid.h5")
 with h5py.File(ref, "w") as f:
@@ -48,6 +59,8 @@ with h5py.File(ref, "w") as f:
     f.create_dataset("pts3", data=pts3.astype(np.float32))
     f.create_dataset("scale3", data=scale3.astype(np.float32))
     f.create_dataset("m3", data=np.asarray(m3, np.float32))
+    f.create_dataset("m2_tol", data=np.asarray(m2_tol, np.float32))
+    f.create_dataset("m3_tol", data=np.asarray(m3_tol, np.float32))
 
 print("wrote", ref, "m2", m2.shape, round(float(np.max(np.abs(m2))), 4),
       "m3", m3.shape, round(float(np.max(np.abs(m3))), 4))

@@ -847,7 +847,7 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 
 ### Phase 3: Extended Features (P1) — ❌ Not started
 
-1. 🚧 Axisymmetric solver `kspaceFirstOrderAS` → `Solver/Axisymmetric.swift`: ✅ DTT foundation (`dct`/`dst` types I-IV, FFTW convention; `FFT/DTT.swift`; parity vs scipy) · ❌ DTT wavenumbers (`makeDTTDim`), radial operators, AS time loop (note: python AS is a C++-binary wrapper — time-loop oracle is the C++ engine, homogeneous-only at float32)
+1. 🚧 Axisymmetric solver `kspaceFirstOrderAS` → `Solver/Axisymmetric.swift`: ✅ DTT foundation (`dct`/`dst` types I-IV) + DTT wavenumbers (`makeDTTDim`, `kxVecDTT`/`kyVecDTT`/`kzVecDTT`; `FFT/DTT.swift`; parity-tested) · ❌ radial WSWA/WSWS operators, AS time loop (note: python AS is a C++-binary wrapper — time-loop oracle is the C++ engine, homogeneous-only at float32)
 2. 🚧 CW propagation: ✅ `angularSpectrumCW` + broadband `angularSpectrum` incl. power-law absorption (Eq. 11; the upstream Python absorbing branch is dead code — Swift implements it correctly), angular restriction, grid expansion, time series (`Solver/AngularSpectrum.swift`; parity-tested) · ❌ `acousticFieldPropagator` (no NumPy oracle), reverse projection
 3. 🚧 `KWaveArray` (off-grid transducer arrays): ✅ `offGridPoints` exact BLI spreading (`Array/OffGridPoints.swift`; parity-tested) · ❌ `tol_star` truncated path, element integration, `getArrayGridWeights`
 4. ❌ `KWaveTransducer` (linear array model) → `Transducer/KWaveTransducer.swift`

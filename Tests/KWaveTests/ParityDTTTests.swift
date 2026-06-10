@@ -50,4 +50,35 @@ final class ParityDTTTests: XCTestCase {
         let (s1Shape, s1Data) = try f.readFloatDataset("dst3_x3_ax1")
         assertClose(dst(x3, type: .iii, axis: 1), s1Data, s1Shape, "dst3 x3 axis1")
     }
+
+    /// Parity for `makeDTTDim` (DTT wavenumber vectors + implied periods) vs k-wave-python
+    /// `kgrid.kx_vec_dtt`, all 8 transform types.
+    ///
+    /// Regenerate with: `.venv-kwave/bin/python Scripts/parity/generate_reference_dttdim.py`.
+    func testMakeDTTDimParity() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/parity/reference_dttdim.h5").path
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_dttdim.py")
+        }
+        let f = try HDF5File(open: path)
+        let n = Int(try f.readFloatDataset("N").data[0])
+        let dx = Double(try f.readFloatDataset("dx").data[0])
+
+        let types: [(String, DTTType)] = [
+            ("dct1", .cosine(.i)), ("dct2", .cosine(.ii)), ("dct3", .cosine(.iii)), ("dct4", .cosine(.iv)),
+            ("dst1", .sine(.i)), ("dst2", .sine(.ii)), ("dst3", .sine(.iii)), ("dst4", .sine(.iv)),
+        ]
+        for (key, type) in types {
+            let refK = try f.readFloatDataset("\(key)_k").data
+            let refM = Int(try f.readFloatDataset("\(key)_M").data[0])
+            let (kVec, m) = makeDTTDim(n: n, d: dx, type: type)
+            XCTAssertEqual(m, refM, "\(key): M")
+            XCTAssertEqual(kVec.count, refK.count, "\(key): count")
+            for (mine, ref) in zip(kVec, refK) {
+                XCTAssertEqual(Float(mine), ref, accuracy: max(abs(ref) * 1e-5, 1e-3), key)
+            }
+        }
+    }
 }

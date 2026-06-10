@@ -79,3 +79,53 @@ public func dst(_ x: MLXArray, type: DiscreteSineType, axis: Int = -1) -> MLXArr
     let ax = axis < 0 ? x.ndim + axis : axis
     return applyAlongAxis(x.asType(.float32), dstMatrix(type, x.dim(ax)), axis: ax)
 }
+
+// MARK: - DTT wavenumbers
+
+/// A DTT type discriminating cosine from sine transforms (k-Wave passes `DiscreteCosine` and
+/// `DiscreteSine` enum members whose integer values overlap).
+public enum DTTType: Sendable {
+    case cosine(DiscreteCosineType)
+    case sine(DiscreteSineType)
+}
+
+/// DTT grid parameters for one spatial direction, mirroring k-Wave `kWaveGrid.makeDTTDim`:
+/// the wavenumber vector implied by the transform's symmetry, and the implied period `M`.
+///
+/// Whole-wavenumber types (DCT-I/II = WSWS/HSHS, DST-I/II = WAWA/HAHA) use `2πn/(M·d)` over
+/// type-specific index ranges; half-wavenumber types (DCT-III/IV, DST-III/IV) use `2π(n+½)/(M·d)`.
+/// All return exactly `n` wavenumbers.
+public func makeDTTDim(n: Int, d: Double, type: DTTType) -> (kVec: [Double], m: Int) {
+    let m: Int
+    switch type {
+    case .cosine(.i): m = 2 * (n - 1)
+    case .sine(.i):   m = 2 * (n + 1)
+    default:          m = 2 * n
+    }
+
+    let scale = 2 * Double.pi / (Double(m) * d)
+    let kVec: [Double]
+    switch type {
+    case .cosine(.i):                       // WSWS: n = 0...M/2.
+        kVec = (0...(m / 2)).map { Double($0) * scale }
+    case .cosine(.ii):                      // HSHS: n = 0..<M/2.
+        kVec = (0..<(m / 2)).map { Double($0) * scale }
+    case .sine(.i):                         // WAWA: n = 1..<M/2.
+        kVec = (1..<(m / 2)).map { Double($0) * scale }
+    case .sine(.ii):                        // HAHA: n = 1...M/2.
+        kVec = (1...(m / 2)).map { Double($0) * scale }
+    case .cosine(.iii), .cosine(.iv), .sine(.iii), .sine(.iv):   // half-wavenumber.
+        kVec = (0..<(m / 2)).map { (Double($0) + 0.5) * scale }
+    }
+    precondition(kVec.count == n, "makeDTTDim: expected \(n) wavenumbers, got \(kVec.count)")
+    return (kVec, m)
+}
+
+public extension KWaveGrid {
+    /// DTT wavenumber vector and implied period along x (k-Wave `kgrid.kx_vec_dtt`).
+    func kxVecDTT(_ type: DTTType) -> (kVec: [Double], m: Int) { makeDTTDim(n: nx, d: dx, type: type) }
+    /// DTT wavenumber vector and implied period along y (k-Wave `kgrid.ky_vec_dtt`).
+    func kyVecDTT(_ type: DTTType) -> (kVec: [Double], m: Int) { makeDTTDim(n: ny, d: dy, type: type) }
+    /// DTT wavenumber vector and implied period along z (k-Wave `kgrid.kz_vec_dtt`).
+    func kzVecDTT(_ type: DTTType) -> (kVec: [Double], m: Int) { makeDTTDim(n: nz, d: dz, type: type) }
+}

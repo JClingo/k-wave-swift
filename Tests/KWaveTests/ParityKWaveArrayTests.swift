@@ -60,4 +60,41 @@ final class ParityKWaveArrayTests: XCTestCase {
                                                sensorData: MLXArray(sdData).reshaped(sdShape))
         try check(combined, "combined")
     }
+
+    /// Disc/bowl Cartesian samplers and the corresponding array elements (2D disc, 3D bowl).
+    func testDiscAndBowlElementsParity() throws {
+        guard FileManager.default.fileExists(atPath: refPath) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_kwavearray.py")
+        }
+        let f = try HDF5File(open: refPath)
+
+        func check(_ mine: MLXArray, _ key: String) throws {
+            let (shape, data) = try f.readFloatDataset(key)
+            let ref = MLXArray(data).reshaped(shape)
+            XCTAssertEqual(mine.shape, shape, "\(key): shape")
+            let maxErr = MLX.max(MLX.abs(mine - ref)).item(Float.self)
+            let scale = MLX.max(MLX.abs(ref)).item(Float.self)
+            XCTAssertLessThan(maxErr / scale, 1e-4, "\(key): max rel error")
+        }
+
+        // Samplers.
+        try check(makeCartDisc(discPos: [0.3e-3, -0.2e-3], radius: 0.6e-3, numPoints: 60), "disc2")
+        try check(makeCartDisc(discPos: [0.2e-3, -0.1e-3, 0.4e-3], radius: 0.5e-3,
+                               focusPos: [1.0e-3, 0.8e-3, -0.5e-3], numPoints: 60), "disc3")
+        try check(makeCartBowl(bowlPos: [-1.0e-3, 0.0, 0.0], radius: 2.0e-3, diameter: 1.4e-3,
+                               focusPos: [1.0e-3, 0.2e-3, 0.1e-3], numPoints: 80), "bowl")
+
+        // 2D disc element weights.
+        let g2 = KWaveGrid(nx: 48, dx: 1e-4, ny: 40, dy: 1e-4)
+        let arr2 = KWaveArray(bliTolerance: 0.1, upsamplingRate: 10)
+        arr2.addDiscElement(position: [0.3e-3, -0.2e-3], diameter: 1.2e-3)
+        try check(arr2.elementGridWeights(grid: g2, element: 0), "w_disc2")
+
+        // 3D bowl element weights.
+        let g3 = KWaveGrid(nx: 32, dx: 1e-4, ny: 28, dy: 1e-4, nz: 24, dz: 1e-4)
+        let arr3 = KWaveArray(bliTolerance: 0.1, upsamplingRate: 10)
+        arr3.addBowlElement(position: [-1.0e-3, 0.0, 0.0], radius: 2.0e-3, diameter: 1.4e-3,
+                            focusPos: [1.0e-3, 0.2e-3, 0.1e-3])
+        try check(arr3.elementGridWeights(grid: g3, element: 0), "w_bowl")
+    }
 }

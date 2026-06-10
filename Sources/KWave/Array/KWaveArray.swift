@@ -7,13 +7,15 @@ import MLX
 /// band-limited interpolant (`offGridPoints`), giving grid weights that drive or sample the
 /// element off-grid.
 ///
-/// Scope: 2D `arc`, `line`, and `rect` elements (the types whose Cartesian samplers are ported).
-/// Disc and bowl elements (3D) follow with `makeCartDisc`/`makeCartBowl`.
+/// Elements: 2D `arc`, `line`, `rect`, `disc`; 3D `disc` and focused `bowl`. Affine array
+/// transforms and annulus elements are not yet implemented.
 public final class KWaveArray {
     private enum Geometry {
         case arc(position: (Double, Double), radius: Double, diameter: Double, focus: (Double, Double))
         case line(start: [Double], end: [Double])
         case rect(position: (Double, Double), lx: Double, ly: Double, theta: Double)
+        case disc(position: [Double], diameter: Double, focus: [Double]?)
+        case bowl(position: [Double], radius: Double, diameter: Double, focus: [Double])
     }
     private struct ArrayElement {
         let geometry: Geometry
@@ -56,6 +58,27 @@ public final class KWaveArray {
                                      dim: 2, measure: lx * ly))
     }
 
+    /// Add a disc element (2D: in-plane; 3D: normal oriented at `focusPos`).
+    public func addDiscElement(position: [Double], diameter: Double, focusPos: [Double]? = nil) {
+        precondition(position.count == 2 || position.count == 3, "position must be 2D or 3D")
+        precondition(position.count == 2 || focusPos != nil, "3D disc elements require focusPos")
+        let area = Double.pi * (diameter / 2) * (diameter / 2)
+        elements.append(ArrayElement(geometry: .disc(position: position, diameter: diameter,
+                                                     focus: focusPos),
+                                     dim: 2, measure: area))
+    }
+
+    /// Add a 3D focused-bowl element (spherical-cap area `2πR²(1−cos φmax)`).
+    public func addBowlElement(position: [Double], radius: Double, diameter: Double,
+                               focusPos: [Double]) {
+        precondition(position.count == 3 && focusPos.count == 3, "bowl elements are 3D")
+        let varphiMax = asin(diameter / (2 * radius))
+        let area = 2 * Double.pi * radius * radius * (1 - cos(varphiMax))
+        elements.append(ArrayElement(geometry: .bowl(position: position, radius: radius,
+                                                     diameter: diameter, focus: focusPos),
+                                     dim: 2, measure: area))
+    }
+
     /// Element measure in grid cells (assumes dx == dy).
     private func measureInGridCells(_ el: ArrayElement, _ grid: KWaveGrid) -> Double {
         el.measure / pow(grid.dx, Double(el.dim))
@@ -63,7 +86,6 @@ public final class KWaveArray {
 
     /// Trimmed integration points covering one element, plus the per-point BLI scale.
     private func integrationPoints(grid: KWaveGrid, element: Int) -> (points: MLXArray, scale: Double) {
-        precondition(grid.dim == 2, "this slice supports 2D grids")
         precondition(element >= 0 && element < elements.count, "element index out of range")
         let el = elements[element]
         let mGrid = measureInGridCells(el, grid)
@@ -89,6 +111,12 @@ public final class KWaveArray {
         case let .rect(position, lx, ly, theta):
             points = makeCartRect(center: position, lx: lx, ly: ly, theta: theta,
                                   numPoints: mIntRequested)
+        case let .disc(position, diameter, focus):
+            points = makeCartDisc(discPos: position, radius: diameter / 2, focusPos: focus,
+                                  numPoints: mIntRequested)
+        case let .bowl(position, radius, diameter, focus):
+            points = makeCartBowl(bowlPos: position, radius: radius, diameter: diameter,
+                                  focusPos: focus, numPoints: mIntRequested)
         }
 
         // Scale uses the actual generated point count (some samplers round up to a full grid),

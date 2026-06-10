@@ -48,3 +48,32 @@ with h5py.File(ref, "w") as f:
     f.create_dataset("combined", data=combined.astype(np.float32))
 
 print("wrote", ref, "mask pts", n_pts, "dist", dist.shape, "combined", combined.shape)
+
+# --- disc / bowl samplers + elements ---------------------------------------
+from kwave.utils.mapgen import make_cart_disc, make_cart_bowl
+
+disc2 = make_cart_disc(np.array([0.3e-3, -0.2e-3]), 0.6e-3, None, 60, False, False)
+disc3 = make_cart_disc(np.array([0.2e-3, -0.1e-3, 0.4e-3]), 0.5e-3,
+                       np.array([1.0e-3, 0.8e-3, -0.5e-3]), 60, False, False)
+bowl = make_cart_bowl(np.array([-1.0e-3, 0.0, 0.0]), 2.0e-3, 1.4e-3,
+                      np.array([1.0e-3, 0.2e-3, 0.1e-3]), 80)
+
+g3 = kWaveGrid(Vector([32, 28, 24]), Vector([1e-4, 1e-4, 1e-4]))
+arr2 = kWaveArray(bli_tolerance=0.1, upsampling_rate=10)
+arr2.add_disc_element(position=[0.3e-3, -0.2e-3], diameter=1.2e-3)
+w_disc2 = np.asarray(arr2.get_element_grid_weights(g, 0))
+
+arr3 = kWaveArray(bli_tolerance=0.1, upsampling_rate=10)
+arr3.add_bowl_element(position=[-1.0e-3, 0.0, 0.0], radius=2.0e-3, diameter=1.4e-3,
+                      focus_pos=[1.0e-3, 0.2e-3, 0.1e-3])
+w_bowl = np.asarray(arr3.get_element_grid_weights(g3, 0))
+
+with h5py.File(ref, "a") as f:
+    f.create_dataset("disc2", data=np.asarray(disc2, np.float32))
+    f.create_dataset("disc3", data=np.asarray(disc3, np.float32))
+    f.create_dataset("bowl", data=np.asarray(bowl, np.float32))
+    f.create_dataset("w_disc2", data=w_disc2.astype(np.float32))
+    f.create_dataset("w_bowl", data=w_bowl.astype(np.float32))
+
+print("disc2", disc2.shape, "disc3", disc3.shape, "bowl", bowl.shape,
+      "w_disc2 sum", round(float(w_disc2.sum()), 4), "w_bowl sum", round(float(w_bowl.sum()), 4))

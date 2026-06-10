@@ -165,3 +165,126 @@ public func makeCartRect(
     }
     return MLXArray(data).reshaped([2, npts])
 }
+
+// MARK: - Disc and bowl point samplers
+
+/// Rotation matrix (row-major 3×3) mapping the canonical direction `[0, 0, −1]` onto the unit
+/// vector from `pos1` to `pos2` (Rodrigues' formula), plus that direction — mirroring k-wave-python
+/// `compute_rotation_between_vectors`. Returns identity for coincident points and `−I` for the
+/// anti-parallel case.
+func rotationToBeamAxis(from pos1: [Double], to pos2: [Double]) -> (r: [Double], direction: [Double]) {
+    let d = zip(pos2, pos1).map(-)
+    let mag = (d.map { $0 * $0 }.reduce(0, +)).squareRoot()
+    let identity: [Double] = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+    if mag < .ulpOfOne { return (identity, [0, 0, 0]) }
+    let dir = d.map { $0 / mag }
+
+    let ref: [Double] = [0, 0, -1]
+    let axis = [ref[1] * dir[2] - ref[2] * dir[1],
+                ref[2] * dir[0] - ref[0] * dir[2],
+                ref[0] * dir[1] - ref[1] * dir[0]]
+    let axisNorm = (axis.map { $0 * $0 }.reduce(0, +)).squareRoot()
+    if axisNorm <= .ulpOfOne {
+        let dot = zip(ref, dir).map(*).reduce(0, +)
+        return (dot > 0 ? identity : identity.map { -$0 }, dir)
+    }
+    let u = axis.map { $0 / axisNorm }
+    let angle = acos(max(-1, min(1, zip(ref, dir).map(*).reduce(0, +))))
+    let c = cos(angle), s = sin(angle), t = 1 - c
+    let r = [t * u[0] * u[0] + c,        t * u[0] * u[1] - s * u[2], t * u[0] * u[2] + s * u[1],
+             t * u[0] * u[1] + s * u[2], t * u[1] * u[1] + c,        t * u[1] * u[2] - s * u[0],
+             t * u[0] * u[2] - s * u[1], t * u[1] * u[2] + s * u[0], t * u[2] * u[2] + c]
+    return (r, dir)
+}
+
+/// Cartesian points covering a disc using concentric rings (k-Wave `makeCartDisc`, the default
+/// non-spiral sampling: `PACKING_NUMBER = 7` points per unit ring index). In 2D the disc lies in
+/// the plane; in 3D it is rotated so its normal points at `focusPos`. The returned point count is
+/// determined by the ring packing, not `numPoints` (which sets the ring budget).
+public func makeCartDisc(
+    discPos: [Double], radius: Double, focusPos: [Double]? = nil, numPoints: Int
+) -> MLXArray {
+    precondition(discPos.count == 2 || discPos.count == 3, "discPos must be 2D or 3D")
+    precondition(radius > 0, "radius must be positive")
+    let dim = discPos.count
+
+    let numRadial = Int(ceil((Double(numPoints) / .pi).squareRoot()))
+    let dRadial = numRadial > 1 ? radius / Double(numRadial - 1) : .infinity
+    let rOf: (Int) -> Double = { k in
+        numRadial > 1 ? Double(k) * (radius - dRadial / 2) / Double(numRadial - 1) : 0
+    }
+    var n = 1
+    for k in 2...max(numRadial, 2) where k <= numRadial { n += (k - 1) * 7 }
+
+    var px = [Double](repeating: 0, count: n)
+    var py = [Double](repeating: 0, count: n)
+    var idx = 1
+    if numRadial >= 2 {
+        for k in 2...numRadial {
+            let nTheta = (k - 1) * 7
+            for i in 0..<nTheta {
+                let theta = Double(i) * 2 * .pi / Double(nTheta)
+                px[idx] = rOf(k - 1) * cos(theta)
+                py[idx] = rOf(k - 1) * sin(theta)
+                idx += 1
+            }
+        }
+    }
+
+    var data = [Float](repeating: 0, count: dim * n)
+    if dim == 2 {
+        for i in 0..<n {
+            data[i] = Float(px[i] + discPos[0])
+            data[n + i] = Float(py[i] + discPos[1])
+        }
+    } else {
+        // Rotate the in-plane points so the disc normal points at the focus, then translate.
+        let r: [Double]
+        if let focusPos {
+            r = rotationToBeamAxis(from: discPos, to: focusPos).r
+        } else {
+            r = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+        }
+        for i in 0..<n {
+            let p = [px[i], py[i], 0.0]
+            for row in 0..<3 {
+                let v = r[row * 3] * p[0] + r[row * 3 + 1] * p[1] + r[row * 3 + 2] * p[2]
+                data[row * n + i] = Float(v + discPos[row])
+            }
+        }
+    }
+    return MLXArray(data).reshaped([dim, n])
+}
+
+/// Cartesian points covering a focused bowl using a golden-angle spiral over the spherical cap
+/// (k-Wave `makeCartBowl`). The bowl's rear-surface midpoint is `bowlPos`; the beam axis points at
+/// `focusPos`. Returns `[3, numPoints]`.
+public func makeCartBowl(
+    bowlPos: [Double], radius: Double, diameter: Double, focusPos: [Double], numPoints: Int
+) -> MLXArray {
+    precondition(bowlPos.count == 3 && focusPos.count == 3, "bowlPos/focusPos must be 3D")
+    precondition(radius > 0 && diameter > 0 && diameter <= 2 * radius, "invalid bowl geometry")
+    precondition(bowlPos != focusPos, "focusPos must differ from bowlPos")
+
+    let goldenAngle = 2.39996322972865332223155550663361385312499901105811504
+    let varphiMax = asin(diameter / (2 * radius))
+    let C = 2 * Double.pi * (1 - cos(varphiMax)) / Double(numPoints - 1)
+
+    let (r, dir) = rotationToBeamAxis(from: bowlPos, to: focusPos)
+    let b = (0..<3).map { bowlPos[$0] + radius * dir[$0] }   // centre of the sphere of curvature.
+
+    var data = [Float](repeating: 0, count: 3 * numPoints)
+    for i in 0..<numPoints {
+        let t = Double(i)
+        let theta = goldenAngle * t
+        let varphi = acos(1 - C * t / (2 * .pi))
+        let p = [radius * cos(theta) * sin(varphi),
+                 radius * sin(theta) * sin(varphi),
+                 radius * cos(varphi)]
+        for row in 0..<3 {
+            let v = r[row * 3] * p[0] + r[row * 3 + 1] * p[1] + r[row * 3 + 2] * p[2]
+            data[row * numPoints + i] = Float(v + b[row])
+        }
+    }
+    return MLXArray(data).reshaped([3, numPoints])
+}

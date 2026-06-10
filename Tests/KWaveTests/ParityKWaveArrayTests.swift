@@ -1,0 +1,45 @@
+import XCTest
+import MLX
+@testable import KWave
+
+/// Parity for `KWaveArray` 2D element grid weights (arc, line, rect) against k-wave-python
+/// `kWaveArray.get_element_grid_weights` / `get_array_grid_weights`.
+///
+/// Regenerate with: `.venv-kwave/bin/python Scripts/parity/generate_reference_kwavearray.py`.
+final class ParityKWaveArrayTests: XCTestCase {
+    override func setUp() { useCPUBackend() }
+
+    private var refPath: String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/parity/reference_kwavearray.h5").path
+    }
+
+    func testKWaveArrayGridWeightsParity() throws {
+        guard FileManager.default.fileExists(atPath: refPath) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_kwavearray.py")
+        }
+        let f = try HDF5File(open: refPath)
+        let grid = KWaveGrid(nx: 48, dx: 1e-4, ny: 40, dy: 1e-4)
+
+        let array = KWaveArray(bliTolerance: 0.1, upsamplingRate: 10)
+        array.addArcElement(position: (-1.2e-3, 0.0), radius: 2e-3, diameter: 1.5e-3,
+                            focusPos: (1e-3, 0.0))
+        array.addLineElement(start: [0.4e-3, -1.1e-3], end: [1.3e-3, 0.7e-3])
+        array.addRectElement(position: (-0.5e-3, 1.2e-3), lx: 0.8e-3, ly: 0.4e-3, theta: 25.0)
+
+        func check(_ mine: MLXArray, _ key: String) throws {
+            let (shape, data) = try f.readFloatDataset(key)
+            let ref = MLXArray(data).reshaped(shape)
+            XCTAssertEqual(mine.shape, shape, "\(key): shape")
+            let maxErr = MLX.max(MLX.abs(mine - ref)).item(Float.self)
+            let scale = MLX.max(MLX.abs(ref)).item(Float.self)
+            XCTAssertLessThan(maxErr / scale, 1e-4, "\(key): max rel error")
+        }
+
+        try check(array.elementGridWeights(grid: grid, element: 0), "w_arc")
+        try check(array.elementGridWeights(grid: grid, element: 1), "w_line")
+        try check(array.elementGridWeights(grid: grid, element: 2), "w_rect")
+        try check(array.arrayGridWeights(grid: grid), "w_all")
+    }
+}

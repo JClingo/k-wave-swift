@@ -50,4 +50,59 @@ final class ParityAngularSpectrumTests: XCTestCase {
         XCTAssertLessThan(maxErr / scale, 1e-4, "max")
         XCTAssertLessThan(l2 / scale, 1e-4, "l2")
     }
+
+    // MARK: - Broadband
+
+    private var broadbandRefPath: String {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/parity/reference_angspec.h5").path
+    }
+
+    private func assertClose(_ mine: MLXArray, _ refData: [Float], _ refShape: [Int],
+                             _ label: String, tol: Float = 1e-4) {
+        let ref = MLXArray(refData).reshaped(refShape)
+        XCTAssertEqual(mine.shape, refShape, "\(label): shape")
+        let maxErr = MLX.max(MLX.abs(mine - ref)).item(Float.self)
+        let scale = MLX.max(MLX.abs(ref)).item(Float.self)
+        XCTAssertLessThan(maxErr / scale, tol, "\(label): max rel error")
+    }
+
+    /// Parity for the broadband (time-domain) `angularSpectrum` against k-wave-python. Odd `Nt`
+    /// only — the upstream even-`Nt` spectrum rebuild drops a bin (`[1:-2]` vs MATLAB `2:end-1`).
+    ///
+    /// Regenerate with: `.venv-kwave/bin/python Scripts/parity/generate_reference_angspec.py`.
+    func testBroadbandAngularSpectrumParity() throws {
+        guard FileManager.default.fileExists(atPath: broadbandRefPath) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_angspec.py")
+        }
+        let f = try HDF5File(open: broadbandRefPath)
+        let dx = Double(try f.readFloatDataset("dx").data[0])
+        let dt = Double(try f.readFloatDataset("dt").data[0])
+        let c0 = Double(try f.readFloatDataset("c0").data[0])
+        let zVals = try f.readFloatDataset("z_vals").data.map { Double($0) }
+        let (inShape, inData) = try f.readFloatDataset("input")
+        let input = MLXArray(inData).reshaped(inShape)
+
+        let (pmaxShape, pmaxData) = try f.readFloatDataset("pmax")
+        let (ptShape, ptData) = try f.readFloatDataset("ptime_z1")
+
+        let (pressureMax, pressureTime) = angularSpectrum(
+            inputPlane: input, dx: dx, dt: dt, zPos: zVals, soundSpeed: c0,
+            recordTimeSeries: true)
+        assertClose(pressureMax, pmaxData, pmaxShape, "pressure_max")
+
+        // Time series at z = zVals[1].
+        let nt = inShape[2]
+        let ptZ1 = pressureTime![0..<inShape[0], 0..<inShape[1], 0..<nt, 1..<2]
+            .reshaped([inShape[0], inShape[1], nt])
+        assertClose(ptZ1, ptData, ptShape, "pressure_time @ z1")
+
+        // Grid-expansion case.
+        let (geShape, geData) = try f.readFloatDataset("pmax_ge")
+        let (pmaxGE, _) = angularSpectrum(
+            inputPlane: input, dx: dx, dt: dt, zPos: [1e-3], soundSpeed: c0, gridExpansion: 4)
+        let geSlice = pmaxGE[0..<geShape[0], 0..<geShape[1], 0..<1].reshaped(geShape)
+        assertClose(geSlice, geData, geShape, "pressure_max grid_expansion")
+    }
 }

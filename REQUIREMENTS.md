@@ -848,7 +848,7 @@ Status legend: ✅ done · ⚠️ partial · ❌ not started
 ### Phase 3: Extended Features (P1) — ❌ Not started
 
 1. ❌ Axisymmetric solver `kspaceFirstOrderAS` → `Solver/Axisymmetric.swift`
-2. 🚧 CW propagation: ✅ `angularSpectrumCW` (`Solver/AngularSpectrum.swift`, lossless; parity-tested) · ❌ `acousticFieldPropagator` (no NumPy oracle), broadband `angularSpectrum`, absorption/grid-expansion
+2. 🚧 CW propagation: ✅ `angularSpectrumCW` + broadband `angularSpectrum` (lossless, angular restriction, grid expansion, time series; `Solver/AngularSpectrum.swift`; parity-tested — Swift fixes the upstream even-`Nt` off-by-one) · ❌ `acousticFieldPropagator` (no NumPy oracle), absorption branch, reverse projection
 3. 🚧 `KWaveArray` (off-grid transducer arrays): ✅ `offGridPoints` exact BLI spreading (`Array/OffGridPoints.swift`; parity-tested) · ❌ `tol_star` truncated path, element integration, `getArrayGridWeights`
 4. ❌ `KWaveTransducer` (linear array model) → `Transducer/KWaveTransducer.swift`
 5. 🚧 Grid geometry: ✅ `makeArc` (finite radius) · ❌ `makeLine` (python-port bug), `makeBowl`, `makeMultiArc` (label-index bug), `makeMultiBowl`, `makeSphericalSection`

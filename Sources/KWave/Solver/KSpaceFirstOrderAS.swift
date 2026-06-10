@@ -11,10 +11,11 @@ import MLXFFT
 /// The radial PML is one-sided (outer edge only); the equation of state gains the cylindrical
 /// `uy/r` divergence term evaluated on the staggered radial grid (`r = dy/2, 3dy/2, …`, never 0).
 ///
-/// Scope: linear, lossless; scalar or spatially varying `c0`/`rho0`; initial-pressure (p0)
-/// and/or time-varying pressure sources (dirichlet, additive, additive-no-correction); binary
-/// sensor mask recording `p`/`pFinal`. Velocity sources, absorption, and nonlinearity follow in
-/// later slices.
+/// Scope: scalar or spatially varying `c0`/`rho0`; initial-pressure (p0) and/or time-varying
+/// pressure sources (dirichlet, additive, additive-no-correction); Stokes absorption
+/// (`alphaMode == .stokes` or `alphaPower == 2` — the only absorption model k-Wave supports
+/// axisymmetrically); B/A nonlinearity; binary sensor mask recording `p`/`pFinal`. Velocity
+/// sources follow in a later slice.
 public func kspaceFirstOrderAS(
     grid: KWaveGrid,
     medium: KWaveMedium,
@@ -80,6 +81,23 @@ public func kspaceFirstOrderAS(
     let dtRho0 = Float(dt) * rho0Grid
     let dtOverRhoX = Float(dt) / staggerDensity(rho0Grid, axis: 0)
     let dtOverRhoY = Float(dt) / staggerDensity(rho0Grid, axis: 1)
+
+    // Stokes absorption (the only model supported axisymmetrically): tau = −2·αNp·c0 with
+    // αNp = db2neper(alphaCoeff, 2). The EOS gains `+ tau·ρ0·(∇·u)`.
+    var absorbTau: MLXArray? = nil
+    if let alphaCoeff = medium.alphaCoeff, medium.alphaMode != .noAbsorption {
+        let y = medium.alphaMode == .stokes ? 2.0 : (medium.alphaPower ?? 2.0)
+        precondition(abs(y - 2.0) < 1e-10,
+                     "axisymmetric absorption requires the Stokes model (alphaPower = 2)")
+        absorbTau = -2 * alphaCoeff.asType(.float32) * Float(db2neper(1.0, y: 2.0)) * c0Grid
+    }
+
+    // B/A nonlinearity: nonlinear mass conservation uses dt·(2·Σρ + ρ0)·∇·u, and the EOS gains
+    // `+ B/A·ρ²/(2ρ0)` (MATLAB kspaceFirstOrderAS, flags.nonlinear).
+    let bOnA: MLXArray? = medium.bOnA.flatMap { b -> MLXArray? in
+        let bf = b.asType(.float32)
+        return MLX.max(MLX.abs(bf)).item(Float.self) != 0 ? bf : nil
+    }
 
     var p0Field: MLXArray? = nil
     if let p0 = source.p0 {
@@ -180,9 +198,15 @@ public func kspaceFirstOrderAS(
         let duydy = MLXFFT.ifft2(kappa.asType(.complex64) * yShiftNeg * uyK)
             .realPart()[0..<nx, 0..<ny]
 
-        // Mass conservation.
-        rhox = pmlX * (pmlX * rhox - dtRho0 * duxdx)
-        rhoy = pmlY * (pmlY * rhoy - dtRho0 * duydy)
+        // Mass conservation (nonlinear variant uses the previous step's total density).
+        if let bOnA {
+            let dtRhoTotal = Float(dt) * (2 * (rhox + rhoy) + rho0Grid)
+            rhox = pmlX * (pmlX * rhox - dtRhoTotal * duxdx)
+            rhoy = pmlY * (pmlY * rhoy - dtRhoTotal * duydy)
+        } else {
+            rhox = pmlX * (pmlX * rhox - dtRho0 * duxdx)
+            rhoy = pmlY * (pmlY * rhoy - dtRho0 * duydy)
+        }
 
         // Pre-scaled pressure source injected identically into both rho splits.
         if let src = pSource, let vals = src.valuesAt(t) {
@@ -207,8 +231,12 @@ public func kspaceFirstOrderAS(
             }
         }
 
-        // Equation of state (linear, lossless).
-        p = c2Grid * (rhox + rhoy)
+        // Equation of state: p = c0²·(ρ [+ τ·ρ0·∇·u] [+ B/A·ρ²/(2ρ0)]).
+        let rhoTotal = rhox + rhoy
+        var eosRho = rhoTotal
+        if let absorbTau { eosRho = eosRho + absorbTau * rho0Grid * (duxdx + duydy) }
+        if let bOnA { eosRho = eosRho + bOnA * (rhoTotal * rhoTotal) / (2 * rho0Grid) }
+        p = c2Grid * eosRho
 
         // t=0 leapfrog override for the initial-pressure source.
         if t == 0, let f = p0Field {

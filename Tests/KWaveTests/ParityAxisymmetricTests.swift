@@ -41,7 +41,8 @@ final class ParityAxisymmetricTests: XCTestCase {
                    pml: Int(try f.readFloatDataset("pml").data[0]), f: f)
     }
 
-    private func runCase(_ r: Ref, source: KWaveSource, refKey: String) throws {
+    private func runCase(_ r: Ref, source: KWaveSource, refKey: String,
+                         medium: KWaveMedium? = nil) throws {
         let (maskShape, maskData) = try r.f.readFloatDataset("mask")
         let sensor = KWaveSensor(mask: MLXArray(maskData).reshaped(maskShape))
         var opts = SimulationOptions()
@@ -49,7 +50,7 @@ final class ParityAxisymmetricTests: XCTestCase {
         opts.smoothP0 = false        // the stored p0 is already smoothed.
 
         let out = kspaceFirstOrderAS(grid: r.grid,
-                                     medium: KWaveMedium(soundSpeed: r.c0, density: r.rho0),
+                                     medium: medium ?? KWaveMedium(soundSpeed: r.c0, density: r.rho0),
                                      source: source, sensor: sensor, options: opts)
 
         func check(_ mine: MLXArray, _ refData: [Float], _ refShape: [Int], _ label: String) {
@@ -97,5 +98,27 @@ final class ParityAxisymmetricTests: XCTestCase {
         source.p = MLXArray(sig)
         source.pMode = .dirichlet
         try runCase(r, source: source, refKey: "dir")
+    }
+
+    func testAxisymmetricStokesAbsorptionParity() throws {
+        let r = try load()
+        let alpha = Double(try r.f.readFloatDataset("alpha_stokes").data[0])
+        let (p0Shape, p0Data) = try r.f.readFloatDataset("p0")
+        var source = KWaveSource()
+        source.p0 = MLXArray(p0Data).reshaped(p0Shape)
+        try runCase(r, source: source, refKey: "stokes",
+                    medium: KWaveMedium(soundSpeed: r.c0, density: r.rho0,
+                                        alphaCoeff: alpha, alphaPower: 2, alphaMode: .stokes))
+    }
+
+    func testAxisymmetricNonlinearParity() throws {
+        let r = try load()
+        let bona = Double(try r.f.readFloatDataset("bona").data[0])
+        let amp = Float(try r.f.readFloatDataset("p0_amp").data[0])
+        let (p0Shape, p0Data) = try r.f.readFloatDataset("p0")
+        var source = KWaveSource()
+        source.p0 = amp * MLXArray(p0Data).reshaped(p0Shape)
+        try runCase(r, source: source, refKey: "nl",
+                    medium: KWaveMedium(soundSpeed: r.c0, density: r.rho0, bOnA: bona))
     }
 }

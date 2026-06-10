@@ -96,8 +96,9 @@ tt = np.arange(NSTEPS)
 sig = (np.sin(2 * np.pi * 2e6 * tt * dt) * np.exp(-((tt - 30.0) ** 2) / 200.0)).astype(np.float64)
 
 
-def run(p0_init, p_mode):
-    """One AS run: p0 IVP (p_mode None) or a time-varying pressure source."""
+def run(p0_init, p_mode, absorb_tau=None, bona=None):
+    """One AS run: p0 IVP (p_mode None) or a time-varying pressure source; optional Stokes
+    absorption (tau = -2*db2neper(alpha,2)*c0) and B/A nonlinearity."""
     p = np.zeros((Nx, Ny)); ux = np.zeros((Nx, Ny)); uy = np.zeros((Nx, Ny))
     rhox = np.zeros((Nx, Ny)); rhoy = np.zeros((Nx, Ny))
     ts = np.zeros((mask_idx.size, NSTEPS))
@@ -111,8 +112,13 @@ def run(p0_init, p_mode):
         uy_k = ddy_k * np.fft.fft2(mirror_hahs(uy)) + np.fft.fft2(mirror_hsha(inv_y_sg * uy))
         duydy = np.real(np.fft.ifft2(kappa * y_shift_neg * uy_k))[:, :Ny]
 
-        rhox = pml_x * (pml_x * rhox - dt * rho0 * duxdx)
-        rhoy = pml_y * (pml_y * rhoy - dt * rho0 * duydy)
+        if bona is None:
+            rhox = pml_x * (pml_x * rhox - dt * rho0 * duxdx)
+            rhoy = pml_y * (pml_y * rhoy - dt * rho0 * duydy)
+        else:
+            rho0_plus_rho = 2 * (rhox + rhoy) + rho0
+            rhox = pml_x * (pml_x * rhox - dt * rho0_plus_rho * duxdx)
+            rhoy = pml_y * (pml_y * rhoy - dt * rho0_plus_rho * duydy)
 
         # Pressure source (kspaceFirstOrder_scaleSourceTerms, N = 2 splits, uniform grid).
         if p_mode == "dirichlet":
@@ -126,7 +132,13 @@ def run(p0_init, p_mode):
             rhox = rhox + mat
             rhoy = rhoy + mat
 
-        p = c0**2 * (rhox + rhoy)
+        rho_total = rhox + rhoy
+        eos = rho_total.copy()
+        if absorb_tau is not None:
+            eos = eos + absorb_tau * rho0 * (duxdx + duydy)
+        if bona is not None:
+            eos = eos + bona * rho_total**2 / (2 * rho0)
+        p = c0**2 * eos
 
         if t == 0 and p0_init is not None:
             p = p0_init.copy()
@@ -140,9 +152,20 @@ def run(p0_init, p_mode):
     return ts, p
 
 
+from kwave.utils.conversion import db2neper
+
+ALPHA_STOKES = 10.0   # dB/(MHz^2 cm)
+BONA = 10.0
+P0_AMP = 5e6          # [Pa] — large amplitude so the B/A term is significant
+
+tau = -2 * db2neper(ALPHA_STOKES, 2) * c0
 ts_ivp, pf_ivp = run(p0, None)
 ts_add, pf_add = run(None, "additive")
 ts_dir, pf_dir = run(None, "dirichlet")
+ts_stokes, pf_stokes = run(p0, None, absorb_tau=tau)
+ts_nl, pf_nl = run(P0_AMP * p0, None, bona=BONA)
+print("stokes effect rel-l2:", np.linalg.norm(ts_stokes - ts_ivp) / np.linalg.norm(ts_ivp))
+print("nonlin effect rel-l2:", np.linalg.norm(ts_nl / P0_AMP - ts_ivp) / np.linalg.norm(ts_ivp))
 
 ref = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_as.h5")
 with h5py.File(ref, "w") as f:
@@ -153,10 +176,15 @@ with h5py.File(ref, "w") as f:
     f.create_dataset("mask", data=mask.astype(np.float32))
     f.create_dataset("src_mask", data=src_mask.astype(np.float32))
     f.create_dataset("sig", data=sig.astype(np.float32))
+    f.create_dataset("alpha_stokes", data=np.float32(ALPHA_STOKES))
+    f.create_dataset("bona", data=np.float32(BONA))
+    f.create_dataset("p0_amp", data=np.float32(P0_AMP))
     for name, (ts, pf) in [("ivp", (ts_ivp, pf_ivp)), ("add", (ts_add, pf_add)),
-                           ("dir", (ts_dir, pf_dir))]:
+                           ("dir", (ts_dir, pf_dir)), ("stokes", (ts_stokes, pf_stokes)),
+                           ("nl", (ts_nl, pf_nl))]:
         f.create_dataset(f"p_ts_{name}", data=ts.astype(np.float32))
         f.create_dataset(f"p_final_{name}", data=pf.astype(np.float32))
 
 print("wrote", ref, "|ivp|", float(np.max(np.abs(ts_ivp))),
-      "|add|", float(np.max(np.abs(ts_add))), "|dir|", float(np.max(np.abs(ts_dir))))
+      "|add|", float(np.max(np.abs(ts_add))), "|dir|", float(np.max(np.abs(ts_dir))),
+      "|stokes|", float(np.max(np.abs(ts_stokes))), "|nl|", float(np.max(np.abs(ts_nl))))

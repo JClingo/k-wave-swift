@@ -651,7 +651,7 @@ private func kspaceFirstOrder3D(
 }
 
 /// i*k * exp(±i*k*Δ/2) staggered derivative multiplier (FFT order), as a complex64 vector.
-private func derivativeOperator(_ kVec: MLXArray, spacing: Double, shift: Int) -> MLXArray {
+func derivativeOperator(_ kVec: MLXArray, spacing: Double, shift: Int) -> MLXArray {
     let theta = kVec * (spacing / 2.0)
     let s = Float(shift)
     let phase = MLX.cos(theta) + (s * imagUnit()) * MLX.sin(theta)
@@ -673,7 +673,7 @@ func flatNonzeroIndices(_ mask: MLXArray) -> MLXArray {
 
 /// Reference sound speed for the k-space correction (`kappa`) and the PML profile: `max(c0)`
 /// (the scalar value itself when the medium is homogeneous). Matches k-Wave's default `c_ref`.
-private func referenceSoundSpeed(_ c0: MLXArray) -> Double {
+func referenceSoundSpeed(_ c0: MLXArray) -> Double {
     c0.size == 1 ? Double(c0.item(Float.self)) : Double(MLX.max(c0).item(Float.self))
 }
 
@@ -686,7 +686,7 @@ private func soundSpeedSamples(_ c0: MLXArray, at idx: MLXArray, count: Int) -> 
 /// Density interpolated to the staggered (+d/2) grid along `axis` by averaging neighbours and
 /// replicating the trailing edge — k-Wave's linear-interp-to-half-point with edge fill. Returns a
 /// scalar density unchanged (homogeneous media need no staggering).
-private func staggerDensity(_ rho0: MLXArray, axis: Int) -> MLXArray {
+func staggerDensity(_ rho0: MLXArray, axis: Int) -> MLXArray {
     guard rho0.size > 1 else { return rho0 }
     let m = MLX.swappedAxes(rho0, axis, 0)
     let n = m.dim(0)

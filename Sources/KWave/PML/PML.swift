@@ -12,9 +12,11 @@ import MLX
 ///   - pmlSize: PML thickness in grid points.
 ///   - pmlAlpha: PML absorption coefficient.
 ///   - staggered: true for the staggered (half-grid) variant used by velocity updates.
+///   - axisymmetric: skip the left-side ramp (the radial axis of the axisymmetric solver has a
+///     PML at the outer edge only).
 func pmlProfile(
     n: Int, dx: Double, dt: Double, c: Double,
-    pmlSize: Int, pmlAlpha: Double, staggered: Bool
+    pmlSize: Int, pmlAlpha: Double, staggered: Bool, axisymmetric: Bool = false
 ) -> [Double] {
     // Match k-wave-python `get_pml`: left and right profiles are computed independently (the
     // staggered grid is shifted +half a point in the + direction, so the sides are NOT mirrors).
@@ -32,7 +34,9 @@ func pmlProfile(
             posLeft = (m + 1 - x) / m                          // (x-pml-1)/(0-pml)
             posRight = x / m
         }
-        pml[k] = exp(-a * dt / 2.0 * pow(posLeft, power))      // left, indices 0..pml-1
+        if !axisymmetric {
+            pml[k] = exp(-a * dt / 2.0 * pow(posLeft, power))  // left, indices 0..pml-1
+        }
         pml[n - pmlSize + k] = exp(-a * dt / 2.0 * pow(posRight, power)) // right
     }
     return pml

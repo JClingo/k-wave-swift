@@ -105,4 +105,38 @@ final class ParityAngularSpectrumTests: XCTestCase {
         let geSlice = pmaxGE[0..<geShape[0], 0..<geShape[1], 0..<1].reshaped(geShape)
         assertClose(geSlice, geData, geShape, "pressure_max grid_expansion")
     }
+
+    /// Parity for the absorbing branch (Eq. 11). The upstream Python absorbing path is dead code
+    /// (dict attribute access crashes), so the reference reproduces the loop with that line fixed.
+    ///
+    /// Regenerate with: `.venv-kwave/bin/python Scripts/parity/generate_reference_angspec_abs.py`.
+    func testBroadbandAngularSpectrumAbsorbingParity() throws {
+        let path = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/parity/reference_angspec_abs.h5").path
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("reference not generated: run Scripts/parity/generate_reference_angspec_abs.py")
+        }
+        let f = try HDF5File(open: path)
+        let dx = Double(try f.readFloatDataset("dx").data[0])
+        let dt = Double(try f.readFloatDataset("dt").data[0])
+        let c0 = Double(try f.readFloatDataset("c0").data[0])
+        let z = Double(try f.readFloatDataset("z").data[0])
+        let alphaCoeff = Double(try f.readFloatDataset("alpha_coeff").data[0])
+        let alphaPower = Double(try f.readFloatDataset("alpha_power").data[0])
+        let (inShape, inData) = try f.readFloatDataset("input")
+        let (pmaxShape, pmaxData) = try f.readFloatDataset("pmax")
+        let (ptShape, ptData) = try f.readFloatDataset("ptime")
+
+        let (pressureMax, pressureTime) = angularSpectrum(
+            inputPlane: MLXArray(inData).reshaped(inShape), dx: dx, dt: dt, zPos: [z],
+            soundSpeed: c0, alphaCoeff: alphaCoeff, alphaPower: alphaPower,
+            recordTimeSeries: true)
+
+        let pmaxSlice = pressureMax[0..<pmaxShape[0], 0..<pmaxShape[1], 0..<1].reshaped(pmaxShape)
+        assertClose(pmaxSlice, pmaxData, pmaxShape, "absorbing pressure_max")
+        let ptSlice = pressureTime![0..<ptShape[0], 0..<ptShape[1], 0..<ptShape[2], 0..<1]
+            .reshaped(ptShape)
+        assertClose(ptSlice, ptData, ptShape, "absorbing pressure_time")
+    }
 }

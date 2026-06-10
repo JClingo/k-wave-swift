@@ -65,7 +65,7 @@ public func angularSpectrumCW(
 /// threshold `kc = k·sqrt(D²/2 / (D²/2 + z²))` (Zeng & McGough Eq. 10).
 private func spectralPropagator(
     k: Double, z: Double, kxy2: MLXArray, sqrtKxy: MLXArray,
-    n: Int, dx: Double, angularRestriction: Bool
+    n: Int, dx: Double, angularRestriction: Bool, alphaNp: Double = 0
 ) -> MLXArray {
     let arg = Float(k * k) - kxy2
     let kzRe = MLX.sqrt(MLX.maximum(arg, MLXArray(Float(0))))
@@ -76,6 +76,22 @@ private func spectralPropagator(
     let angle = Float(z) * kzRe
     var hRe = decay * MLX.cos(angle)
     var hIm = -decay * MLX.sin(angle)
+
+    // Attenuation (Zeng & McGough Eq. 11): H ·= exp(−αNp·z·k/kz). kz is real for propagating
+    // components (a real decay factor) and imaginary for evanescent ones, where k/kz = −i·k/kzIm
+    // makes the factor a pure phase. Applied before the angular restriction, matching k-Wave.
+    if alphaNp != 0 {
+        let azk = Float(alphaNp * z * k)
+        let propagating = arg .> MLXArray(Float(0))
+        let fRePropag = MLX.exp(-azk / kzRe)
+        let theta = azk / kzIm
+        let fRe = MLX.which(propagating, fRePropag, MLX.cos(theta))
+        let fIm = MLX.which(propagating, MLXArray(Float(0)), MLX.sin(theta))
+        let newRe = hRe * fRe - hIm * fIm
+        let newIm = hRe * fIm + hIm * fRe
+        hRe = newRe
+        hIm = newIm
+    }
 
     if angularRestriction {
         let d = Double(n - 1) * dx
@@ -112,11 +128,14 @@ private func spectralPropagator(
 /// - Returns: `pressureMax` `[Nx, Ny, Nz]`, and `pressureTime` `[Nx, Ny, Nt, Nz]` when requested.
 public func angularSpectrum(
     inputPlane: MLXArray, dx: Double, dt: Double, zPos: [Double], soundSpeed: Double,
+    alphaCoeff: Double? = nil, alphaPower: Double? = nil,
     angularRestriction: Bool = true, gridExpansion: Int = 0, fftLength: Int? = nil,
     recordTimeSeries: Bool = false
 ) -> (pressureMax: MLXArray, pressureTime: MLXArray?) {
     precondition(inputPlane.ndim == 3, "inputPlane must be [Nx, Ny, Nt]")
     precondition(!zPos.isEmpty, "zPos must have at least one position")
+    precondition((alphaCoeff == nil) == (alphaPower == nil),
+                 "alphaCoeff and alphaPower must be provided together")
     precondition(soundSpeed * dt / dx <= 1,
                  "temporal sampling cannot resolve the maximum spatial frequency (CFL > 1)")
 
@@ -155,8 +174,15 @@ public func angularSpectrum(
         var freqPlanes = [MLXArray](repeating: zeroPlane, count: nUnique)
         for f in 0..<nProp {
             let k = 2 * Double.pi * fVec[f] / soundSpeed
+            // αNp = db2neper(α, y)·ω^y converts dB/(MHz^y cm) to Np/m at this frequency.
+            var alphaNp = 0.0
+            if let alphaCoeff, let alphaPower {
+                alphaNp = db2neper(alphaCoeff, y: alphaPower)
+                    * pow(2 * Double.pi * fVec[f], alphaPower)
+            }
             let h = spectralPropagator(k: k, z: z, kxy2: kxy2, sqrtKxy: sqrtKxy,
-                                       n: n, dx: dx, angularRestriction: angularRestriction)
+                                       n: n, dx: dx, angularRestriction: angularRestriction,
+                                       alphaNp: alphaNp)
             let plane = spec[0..<nx, 0..<ny, f..<(f + 1)].reshaped([nx, ny])
             let step = MLXFFT.ifft2(MLXFFT.fft2(plane, s: [n, n]) * h, s: [n, n])[0..<nx, 0..<ny]
 

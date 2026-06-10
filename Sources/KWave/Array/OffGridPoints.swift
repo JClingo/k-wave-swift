@@ -98,6 +98,28 @@ public func offGridPoints(grid: KWaveGrid, points: MLXArray, scale: [Double]? = 
     return offGridPointsExact(grid: grid, points: points, scale: scale)
 }
 
+/// Binary mask of the tolStar neighbour nodes of a set of off-grid points (k-wave-python
+/// `off_grid_points(..., mask_only=True)` with a nonzero tolerance). Marks every star node,
+/// including sinc zero-crossings.
+func offGridPointsMask(grid: KWaveGrid, points: MLXArray, bliTolerance: Double) -> [Bool] {
+    precondition(bliTolerance > 0 && bliTolerance < 1, "mask requires a tolerance in (0, 1)")
+    precondition(points.ndim == 2 && points.dim(0) == grid.dim, "points must be [dim, numPoints]")
+    let dim = grid.dim
+    let nPts = points.dim(1)
+    let host = points.reshaped([dim * nPts]).asArray(Float.self)
+    let dims = grid.size
+    var mask = [Bool](repeating: false, count: dims.reduce(1, *))
+    for p in 0..<nPts {
+        let point = (0..<dim).map { Double(host[$0 * nPts + p]) }
+        for node in tolStarNodes(tolerance: bliTolerance, grid: grid, point: point) {
+            var flat = 0
+            for axis in 0..<dim { flat = flat * dims[axis] + node[axis] }
+            mask[flat] = true
+        }
+    }
+    return mask
+}
+
 /// Truncated-sinc evaluation on tolStar neighbour nodes, accumulated on the host.
 private func offGridPointsTruncated(
     grid: KWaveGrid, points: MLXArray, scale: [Double]?, tolerance: Double

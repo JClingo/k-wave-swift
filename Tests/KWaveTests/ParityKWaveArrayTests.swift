@@ -41,5 +41,23 @@ final class ParityKWaveArrayTests: XCTestCase {
         try check(array.elementGridWeights(grid: grid, element: 1), "w_line")
         try check(array.elementGridWeights(grid: grid, element: 2), "w_rect")
         try check(array.arrayGridWeights(grid: grid), "w_all")
+
+        // Binary mask: exact match.
+        let (mShape, mData) = try f.readFloatDataset("mask")
+        let mask = array.arrayBinaryMask(grid: grid)
+        XCTAssertEqual(mask.shape, mShape)
+        XCTAssertEqual(MLX.max(MLX.abs(mask - MLXArray(mData).reshaped(mShape))).item(Float.self),
+                       0, "binary mask")
+
+        // Source-signal distribution and sensor-data combination (C order).
+        let (sigShape, sigData) = try f.readFloatDataset("sig")
+        let dist = array.distributedSourceSignal(grid: grid,
+                                                 sourceSignal: MLXArray(sigData).reshaped(sigShape))
+        try check(dist, "dist")
+
+        let (sdShape, sdData) = try f.readFloatDataset("sensor_data")
+        let combined = array.combineSensorData(grid: grid,
+                                               sensorData: MLXArray(sdData).reshaped(sdShape))
+        try check(combined, "combined")
     }
 }

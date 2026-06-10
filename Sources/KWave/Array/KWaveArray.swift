@@ -56,15 +56,17 @@ public final class KWaveArray {
                                      dim: 2, measure: lx * ly))
     }
 
-    /// Grid weights for one element: integration points spread with the BLI and scaled so the
-    /// weights integrate to the element measure in grid units.
-    public func elementGridWeights(grid: KWaveGrid, element: Int) -> MLXArray {
+    /// Element measure in grid cells (assumes dx == dy).
+    private func measureInGridCells(_ el: ArrayElement, _ grid: KWaveGrid) -> Double {
+        el.measure / pow(grid.dx, Double(el.dim))
+    }
+
+    /// Trimmed integration points covering one element, plus the per-point BLI scale.
+    private func integrationPoints(grid: KWaveGrid, element: Int) -> (points: MLXArray, scale: Double) {
         precondition(grid.dim == 2, "this slice supports 2D grids")
         precondition(element >= 0 && element < elements.count, "element index out of range")
         let el = elements[element]
-
-        // Measure in grid cells (assumes dx == dy), and the integration-point budget.
-        let mGrid = el.measure / pow(grid.dx, Double(el.dim))
+        let mGrid = measureInGridCells(el, grid)
         let mIntRequested = Int(ceil(mGrid * Double(upsamplingRate)))
 
         let points: MLXArray
@@ -92,9 +94,91 @@ public final class KWaveArray {
         // Scale uses the actual generated point count (some samplers round up to a full grid),
         // computed BEFORE trimming — matching k-Wave's order.
         let scale = mGrid / Double(points.dim(1))
-        let trimmed = trimCartPoints(grid: grid, points: points)
-        return offGridPoints(grid: grid, points: trimmed, scale: [scale],
+        return (trimCartPoints(grid: grid, points: points), scale)
+    }
+
+    /// Grid weights for one element: integration points spread with the BLI and scaled so the
+    /// weights integrate to the element measure in grid units.
+    public func elementGridWeights(grid: KWaveGrid, element: Int) -> MLXArray {
+        let (points, scale) = integrationPoints(grid: grid, element: element)
+        return offGridPoints(grid: grid, points: points, scale: [scale],
                              bliTolerance: bliTolerance)
+    }
+
+    /// Binary mask covering every grid node touched by any element's BLI star — the mask to use
+    /// as `source.pMask`/`sensor.mask` (k-Wave `get_array_binary_mask`).
+    public func arrayBinaryMask(grid: KWaveGrid) -> MLXArray {
+        precondition(!elements.isEmpty, "Cannot call method on an array with zero elements.")
+        var mask = [Bool](repeating: false, count: grid.size.reduce(1, *))
+        for i in 0..<elements.count {
+            let (points, _) = integrationPoints(grid: grid, element: i)
+            for (j, on) in offGridPointsMask(grid: grid, points: points,
+                                             bliTolerance: bliTolerance).enumerated() where on {
+                mask[j] = true
+            }
+        }
+        return MLXArray(mask.map { Float($0 ? 1 : 0) }).reshaped(grid.size)
+    }
+
+    /// Distribute per-element source signals onto the grid source points selected by
+    /// `arrayBinaryMask` (k-Wave `get_distributed_source_signal`, C order). The output rows match
+    /// the ascending flat-index order the solver uses for source masks.
+    ///
+    /// - Parameter sourceSignal: `[numberElements, Nt]`.
+    /// - Returns: `[numSourcePoints, Nt]` per-grid-point signals.
+    public func distributedSourceSignal(grid: KWaveGrid, sourceSignal: MLXArray) -> MLXArray {
+        precondition(sourceSignal.ndim == 2 && sourceSignal.dim(0) == elements.count,
+                     "sourceSignal must be [numberElements, Nt]")
+        let nt = sourceSignal.dim(1)
+        let sig = sourceSignal.reshaped([elements.count * nt]).asArray(Float.self)
+
+        let mask = arrayBinaryMask(grid: grid).reshaped([grid.size.reduce(1, *)]).asArray(Float.self)
+        let maskInd = mask.enumerated().compactMap { $0.element != 0 ? $0.offset : nil }
+        var rowOf = [Int: Int]()
+        for (row, flat) in maskInd.enumerated() { rowOf[flat] = row }
+
+        var out = [Float](repeating: 0, count: maskInd.count * nt)
+        for el in 0..<elements.count {
+            let w = elementGridWeights(grid: grid, element: el)
+                .reshaped([grid.size.reduce(1, *)]).asArray(Float.self)
+            for (flat, weight) in w.enumerated() where weight != 0 {
+                guard let row = rowOf[flat] else { continue }
+                for t in 0..<nt { out[row * nt + t] += weight * sig[el * nt + t] }
+            }
+        }
+        return MLXArray(out).reshaped([maskInd.count, nt])
+    }
+
+    /// Combine per-grid-point sensor data (recorded with `arrayBinaryMask` as the sensor mask)
+    /// back into per-element signals (k-Wave `combine_sensor_data`, C order): the weighted sum
+    /// over each element's grid points, normalised by the element measure in grid cells.
+    ///
+    /// - Parameter sensorData: `[numSourcePoints, Nt]` in ascending flat-index order.
+    /// - Returns: `[numberElements, Nt]`.
+    public func combineSensorData(grid: KWaveGrid, sensorData: MLXArray) -> MLXArray {
+        precondition(sensorData.ndim == 2, "sensorData must be [numSensorPoints, Nt]")
+        let nt = sensorData.dim(1)
+        let data = sensorData.reshaped([sensorData.dim(0) * nt]).asArray(Float.self)
+
+        let mask = arrayBinaryMask(grid: grid).reshaped([grid.size.reduce(1, *)]).asArray(Float.self)
+        let maskInd = mask.enumerated().compactMap { $0.element != 0 ? $0.offset : nil }
+        precondition(maskInd.count == sensorData.dim(0),
+                     "sensorData rows must match the array binary mask point count")
+        var rowOf = [Int: Int]()
+        for (row, flat) in maskInd.enumerated() { rowOf[flat] = row }
+
+        var out = [Float](repeating: 0, count: elements.count * nt)
+        for el in 0..<elements.count {
+            let w = elementGridWeights(grid: grid, element: el)
+                .reshaped([grid.size.reduce(1, *)]).asArray(Float.self)
+            for (flat, weight) in w.enumerated() where weight != 0 {
+                guard let row = rowOf[flat] else { continue }
+                for t in 0..<nt { out[el * nt + t] += weight * data[row * nt + t] }
+            }
+            let mGrid = Float(measureInGridCells(elements[el], grid))
+            for t in 0..<nt { out[el * nt + t] /= mGrid }
+        }
+        return MLXArray(out).reshaped([elements.count, nt])
     }
 
     /// Summed grid weights over all elements (k-Wave `get_array_grid_weights`).

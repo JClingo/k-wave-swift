@@ -19,6 +19,20 @@ arr.add_arc_element(position=[-1.2e-3, 0.0], radius=2e-3, diameter=1.5e-3, focus
 arr.add_line_element(start_point=[0.4e-3, -1.1e-3], end_point=[1.3e-3, 0.7e-3])
 arr.add_rect_element(position=[-0.5e-3, 1.2e-3], Lx=0.8e-3, Ly=0.4e-3, theta=25.0)
 
+mask = np.asarray(arr.get_array_binary_mask(g))
+n_pts = int(mask.sum())
+
+# Per-element signals; distribute onto grid points (C order, matching the Swift convention).
+Nt = 50
+t = np.arange(Nt)
+sig = np.vstack([np.sin(2 * np.pi * t / 20.0 + ph) for ph in (0.0, 0.7, -1.1)])
+dist = np.asarray(arr.get_distributed_source_signal(g, sig, order="C"))
+
+# Synthetic per-grid-point sensor data; combine back to elements (C order).
+rng = np.random.default_rng(3)
+sensor_data = rng.standard_normal((n_pts, Nt))
+combined = np.asarray(arr.combine_sensor_data(g, sensor_data, order="C"))
+
 ref = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_kwavearray.h5")
 with h5py.File(ref, "w") as f:
     for i, name in enumerate(["arc", "line", "rect"]):
@@ -27,5 +41,10 @@ with h5py.File(ref, "w") as f:
         print(name, "max", round(float(np.max(np.abs(w))), 4), "sum", round(float(w.sum()), 4))
     W = np.asarray(arr.get_array_grid_weights(g))
     f.create_dataset("w_all", data=W.astype(np.float32))
+    f.create_dataset("mask", data=mask.astype(np.float32))
+    f.create_dataset("sig", data=sig.astype(np.float32))
+    f.create_dataset("dist", data=dist.astype(np.float32))
+    f.create_dataset("sensor_data", data=sensor_data.astype(np.float32))
+    f.create_dataset("combined", data=combined.astype(np.float32))
 
-print("wrote", ref)
+print("wrote", ref, "mask pts", n_pts, "dist", dist.shape, "combined", combined.shape)

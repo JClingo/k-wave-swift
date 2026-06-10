@@ -25,9 +25,8 @@ public func kspaceFirstOrderAS(
 ) -> SimulationOutput {
     precondition(grid.dim == 2, "axisymmetric solver requires a 2D grid (x axial, y radial)")
     precondition(grid.nt > 0, "call grid.makeTime(...) before running the solver")
-    precondition(source.p0 != nil || source.pMask != nil,
-                 "axisymmetric solver requires source.p0 or a time-varying pressure source")
-    precondition(source.uMask == nil, "velocity sources are not yet supported in the AS solver")
+    precondition(source.p0 != nil || source.pMask != nil || source.uMask != nil,
+                 "axisymmetric solver requires source.p0 or a time-varying p/u source")
 
     let nx = grid.nx, ny = grid.ny
     let shape = [nx, ny]
@@ -106,10 +105,10 @@ public func kspaceFirstOrderAS(
         p0Field = f
     }
 
-    // Time-varying pressure source: injected as a mass source into BOTH rho splits with a single
-    // scale (kspaceFirstOrder_scaleSourceTerms, uniform grid, N = 2 splits):
-    //   dirichlet: p/(2·c0²)   additive: p·2·dt/(2·c0·dx).
-    struct ASPressureSource {
+    // Time-varying sources. Scaling per kspaceFirstOrder_scaleSourceTerms (uniform grid):
+    //   pressure (mass source into BOTH rho splits, N = 2): dirichlet p/(2·c0²),
+    //   additive p·2·dt/(2·c0·dx); velocity: dirichlet unscaled, additive u·2·c0·dt/d (per axis).
+    struct ASSource {
         let indices: MLXArray       // Int32 flat indices, length nSrc.
         let signal: [[Float]]       // [rows][len]; 1 row broadcasts.
         let scale: [Float]          // per-point scale.
@@ -122,30 +121,68 @@ public func kspaceFirstOrderAS(
             }
             return MLXArray((0..<nSrc).map { signal[$0][t] * scale[$0] })
         }
+        /// The scaled source values scattered into a grid-shaped matrix, or `nil` once exhausted.
+        func matrixAt(_ t: Int, shape: [Int]) -> MLXArray? {
+            guard let vals = valuesAt(t) else { return nil }
+            let buf = MLXArray.zeros([shape[0] * shape[1]], dtype: .float32)
+            buf[indices] = vals
+            return buf.reshaped(shape)
+        }
     }
-    var pSource: ASPressureSource? = nil
-    var sourceKappa: MLXArray? = nil
-    if let mask = source.pMask, let sig = source.p {
+    func makeASSource(mask: MLXArray?, signal: MLXArray?, scale: (Float) -> Float) -> ASSource? {
+        guard let mask, let signal else { return nil }
         let idx = flatNonzeroIndices(mask)
         let nSrc = idx.size
-        let cAt = soundSpeedSamples(c0Grid, at: idx, count: nSrc)
-        let scale: [Float]
-        if source.pMode == .dirichlet {
-            scale = cAt.map { 1 / (2 * $0 * $0) }
-        } else {
-            scale = cAt.map { Float(2.0 * dt / (2.0 * Double($0) * grid.dx)) }
-        }
+        guard nSrc > 0 else { return nil }
+        let scales = soundSpeedSamples(c0Grid, at: idx, count: nSrc).map(scale)
         let rows: [[Float]]
-        if sig.ndim <= 1 {
-            rows = [sig.asArray(Float.self)]
+        if signal.ndim <= 1 {
+            rows = [signal.asArray(Float.self)]
         } else {
-            let r = sig.dim(0), c = sig.dim(1)
-            let flat = sig.reshaped([r * c]).asArray(Float.self)
+            let r = signal.dim(0), c = signal.dim(1)
+            let flat = signal.reshaped([r * c]).asArray(Float.self)
             rows = (0..<r).map { Array(flat[$0 * c ..< ($0 + 1) * c]) }
         }
-        pSource = ASPressureSource(indices: idx, signal: rows, scale: scale, nSrc: nSrc)
-        if source.pMode == .additive {
-            sourceKappa = MLX.cos(arg).asType(.float32)        // cos(c_ref·k_exp·dt/2), expanded.
+        return ASSource(indices: idx, signal: rows, scale: scales, nSrc: nSrc)
+    }
+
+    let pSource = makeASSource(mask: source.pMask, signal: source.p, scale: { c in
+        source.pMode == .dirichlet ? 1 / (2 * c * c)
+                                   : Float(2.0 * dt / (2.0 * Double(c) * grid.dx))
+    })
+    let uxSource = makeASSource(mask: source.uMask, signal: source.ux, scale: { c in
+        source.uMode == .dirichlet ? 1 : Float(2.0 * Double(c) * dt / grid.dx)
+    })
+    let uySource = makeASSource(mask: source.uMask, signal: source.uy, scale: { c in
+        source.uMode == .dirichlet ? 1 : Float(2.0 * Double(c) * dt / grid.dy)
+    })
+    let needsCorrection = (pSource != nil && source.pMode == .additive)
+        || ((uxSource != nil || uySource != nil) && source.uMode == .additive)
+    let sourceKappa: MLXArray? = needsCorrection
+        ? MLX.cos(arg).asType(.float32) : nil                  // cos(c_ref·k_exp·dt/2), expanded.
+
+    /// Additive k-space correction: mirror with the variable's symmetry, filter, trim.
+    func correctSource(_ mat: MLXArray, mirror: (MLXArray) -> MLXArray) -> MLXArray {
+        let spec = sourceKappa!.asType(.complex64) * MLXFFT.fft2(mirror(mat).asType(.complex64))
+        return MLXFFT.ifft2(spec).realPart()[0..<nx, 0..<ny]
+    }
+
+    /// Apply a velocity source to `field` (dirichlet / additive / additive-no-correction).
+    func applyVelocitySource(_ src: ASSource?, _ field: MLXArray, t: Int,
+                             mirror: (MLXArray) -> MLXArray) -> MLXArray {
+        guard let src else { return field }
+        switch source.uMode {
+        case .dirichlet:
+            guard let vals = src.valuesAt(t) else { return field }
+            let flat = field.reshaped([nx * ny])
+            flat[src.indices] = vals
+            return flat.reshaped(shape)
+        case .additiveNoCorrection:
+            guard let mat = src.matrixAt(t, shape: shape) else { return field }
+            return field + mat
+        case .additive:
+            guard let mat = src.matrixAt(t, shape: shape) else { return field }
+            return field + correctSource(mat, mirror: mirror)
         }
     }
 
@@ -185,10 +222,13 @@ public func kspaceFirstOrderAS(
     var pRec: [MLXArray] = []
 
     for t in 0..<grid.nt {
-        // Velocity update from the pressure gradients.
+        // Velocity update from the pressure gradients, plus velocity sources
+        // (ux mirrors with WSWA symmetry, uy with HAHS — matching the field variables).
         let (dpdx, dpdy) = pressureGradients(p)
         ux = pmlXsg * (pmlXsg * ux - dtOverRhoX * dpdx)
+        ux = applyVelocitySource(uxSource, ux, t: t, mirror: mirrorWSWA)
         uy = pmlYsg * (pmlYsg * uy - dtOverRhoY * dpdy)
+        uy = applyVelocitySource(uySource, uy, t: t, mirror: mirrorHAHS)
 
         // Velocity divergence: axial term plus the cylindrical radial term ∂uy/∂y + uy/r.
         let uxK = kappa.asType(.complex64) * MLXFFT.fft2(mirrorWSWA(ux).asType(.complex64))
@@ -209,25 +249,23 @@ public func kspaceFirstOrderAS(
         }
 
         // Pre-scaled pressure source injected identically into both rho splits.
-        if let src = pSource, let vals = src.valuesAt(t) {
+        if let src = pSource {
             switch source.pMode {
             case .dirichlet:
-                var fx = rhox.reshaped([nx * ny]); fx[src.indices] = vals
-                var fy = rhoy.reshaped([nx * ny]); fy[src.indices] = vals
-                rhox = fx.reshaped(shape); rhoy = fy.reshaped(shape)
+                if let vals = src.valuesAt(t) {
+                    let fx = rhox.reshaped([nx * ny]); fx[src.indices] = vals
+                    let fy = rhoy.reshaped([nx * ny]); fy[src.indices] = vals
+                    rhox = fx.reshaped(shape); rhoy = fy.reshaped(shape)
+                }
             case .additiveNoCorrection:
-                let buf = MLXArray.zeros([nx * ny], dtype: .float32)
-                buf[src.indices] = vals
-                let mat = buf.reshaped(shape)
-                rhox = rhox + mat; rhoy = rhoy + mat
+                if let mat = src.matrixAt(t, shape: shape) {
+                    rhox = rhox + mat; rhoy = rhoy + mat
+                }
             case .additive:
-                let buf = MLXArray.zeros([nx * ny], dtype: .float32)
-                buf[src.indices] = vals
-                // k-space source correction on the WSWA-mirrored expansion.
-                let spec = sourceKappa!.asType(.complex64)
-                    * MLXFFT.fft2(mirrorWSWA(buf.reshaped(shape)).asType(.complex64))
-                let mat = MLXFFT.ifft2(spec).realPart()[0..<nx, 0..<ny]
-                rhox = rhox + mat; rhoy = rhoy + mat
+                if let mat = src.matrixAt(t, shape: shape) {
+                    let corrected = correctSource(mat, mirror: mirrorWSWA)
+                    rhox = rhox + corrected; rhoy = rhoy + corrected
+                }
             }
         }
 

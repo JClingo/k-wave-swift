@@ -121,4 +121,24 @@ final class ParityAxisymmetricTests: XCTestCase {
         try runCase(r, source: source, refKey: "nl",
                     medium: KWaveMedium(soundSpeed: r.c0, density: r.rho0, bOnA: bona))
     }
+
+    private func velocitySource(_ r: Ref, axis: String) throws -> KWaveSource {
+        let (smShape, smData) = try r.f.readFloatDataset("src_mask")
+        let sig = try r.f.readFloatDataset("sig").data
+        var source = KWaveSource()
+        source.uMask = MLXArray(smData).reshaped(smShape)
+        if axis == "x" { source.ux = MLXArray(sig) } else { source.uy = MLXArray(sig) }
+        source.uMode = .additive
+        return source
+    }
+
+    func testAxisymmetricAdditiveUxSourceParity() throws {
+        let r = try load()
+        try runCase(r, source: try velocitySource(r, axis: "x"), refKey: "uxs")
+    }
+
+    func testAxisymmetricAdditiveUySourceParity() throws {
+        let r = try load()
+        try runCase(r, source: try velocitySource(r, axis: "y"), refKey: "uys")
+    }
 }

@@ -96,9 +96,10 @@ tt = np.arange(NSTEPS)
 sig = (np.sin(2 * np.pi * 2e6 * tt * dt) * np.exp(-((tt - 30.0) ** 2) / 200.0)).astype(np.float64)
 
 
-def run(p0_init, p_mode, absorb_tau=None, bona=None):
-    """One AS run: p0 IVP (p_mode None) or a time-varying pressure source; optional Stokes
-    absorption (tau = -2*db2neper(alpha,2)*c0) and B/A nonlinearity."""
+def run(p0_init, p_mode, absorb_tau=None, bona=None, u_mode=None):
+    """One AS run: p0 IVP (p_mode None) or a time-varying pressure/velocity source; optional
+    Stokes absorption (tau = -2*db2neper(alpha,2)*c0) and B/A nonlinearity. u_mode "ux"/"uy"
+    drives an additive velocity source on src_mask (scale 2*c0*dt/d; ux mirrors WSWA, uy HAHS)."""
     p = np.zeros((Nx, Ny)); ux = np.zeros((Nx, Ny)); uy = np.zeros((Nx, Ny))
     rhox = np.zeros((Nx, Ny)); rhoy = np.zeros((Nx, Ny))
     ts = np.zeros((mask_idx.size, NSTEPS))
@@ -106,6 +107,15 @@ def run(p0_init, p_mode, absorb_tau=None, bona=None):
         dpdx, dpdy = pressure_gradients(p)
         ux = pml_x_sg * (pml_x_sg * ux - dt / rho0 * dpdx)
         uy = pml_y_sg * (pml_y_sg * uy - dt / rho0 * dpdy)
+
+        if u_mode == "ux":
+            mat = np.zeros((Nx, Ny))
+            mat.ravel()[src_idx] = sig[t] * 2 * c0 * dt / dx
+            ux = ux + np.real(np.fft.ifft2(source_kappa * np.fft.fft2(mirror_wswa(mat))))[:, :Ny]
+        elif u_mode == "uy":
+            mat = np.zeros((Nx, Ny))
+            mat.ravel()[src_idx] = sig[t] * 2 * c0 * dt / dy
+            uy = uy + np.real(np.fft.ifft2(source_kappa * np.fft.fft2(mirror_hahs(mat))))[:, :Ny]
 
         ux_k = kappa * np.fft.fft2(mirror_wswa(ux))
         duxdx = np.real(np.fft.ifft2(ddx_neg * ux_k))[:, :Ny]
@@ -164,6 +174,8 @@ ts_add, pf_add = run(None, "additive")
 ts_dir, pf_dir = run(None, "dirichlet")
 ts_stokes, pf_stokes = run(p0, None, absorb_tau=tau)
 ts_nl, pf_nl = run(P0_AMP * p0, None, bona=BONA)
+ts_uxs, pf_uxs = run(None, None, u_mode="ux")
+ts_uys, pf_uys = run(None, None, u_mode="uy")
 print("stokes effect rel-l2:", np.linalg.norm(ts_stokes - ts_ivp) / np.linalg.norm(ts_ivp))
 print("nonlin effect rel-l2:", np.linalg.norm(ts_nl / P0_AMP - ts_ivp) / np.linalg.norm(ts_ivp))
 
@@ -181,7 +193,8 @@ with h5py.File(ref, "w") as f:
     f.create_dataset("p0_amp", data=np.float32(P0_AMP))
     for name, (ts, pf) in [("ivp", (ts_ivp, pf_ivp)), ("add", (ts_add, pf_add)),
                            ("dir", (ts_dir, pf_dir)), ("stokes", (ts_stokes, pf_stokes)),
-                           ("nl", (ts_nl, pf_nl))]:
+                           ("nl", (ts_nl, pf_nl)), ("uxs", (ts_uxs, pf_uxs)),
+                           ("uys", (ts_uys, pf_uys))]:
         f.create_dataset(f"p_ts_{name}", data=ts.astype(np.float32))
         f.create_dataset(f"p_final_{name}", data=pf.astype(np.float32))
 

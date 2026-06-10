@@ -82,40 +82,67 @@ def pressure_gradients(p):
     return dpdx, dpdy
 
 
+source_kappa = np.cos(arg)
+
 mask = np.zeros((Nx, Ny), dtype=bool)
 mask[:, 8] = True
 mask_idx = np.flatnonzero(mask)
 
-p = np.zeros((Nx, Ny))
-ux = np.zeros((Nx, Ny))
-uy = np.zeros((Nx, Ny))
-rhox = np.zeros((Nx, Ny))
-rhoy = np.zeros((Nx, Ny))
-p_ts = np.zeros((mask_idx.size, NSTEPS), dtype=np.float64)
+# Time-varying source: a short disc on the axis, driven by a windowed tone burst.
+src_mask = np.zeros((Nx, Ny), dtype=bool)
+src_mask[Nx // 4, 0:3] = True
+src_idx = np.flatnonzero(src_mask)
+tt = np.arange(NSTEPS)
+sig = (np.sin(2 * np.pi * 2e6 * tt * dt) * np.exp(-((tt - 30.0) ** 2) / 200.0)).astype(np.float64)
 
-for t in range(NSTEPS):
-    dpdx, dpdy = pressure_gradients(p)
-    ux = pml_x_sg * (pml_x_sg * ux - dt / rho0 * dpdx)
-    uy = pml_y_sg * (pml_y_sg * uy - dt / rho0 * dpdy)
 
-    ux_k = kappa * np.fft.fft2(mirror_wswa(ux))
-    duxdx = np.real(np.fft.ifft2(ddx_neg * ux_k))[:, :Ny]
-    uy_k = ddy_k * np.fft.fft2(mirror_hahs(uy)) + np.fft.fft2(mirror_hsha(inv_y_sg * uy))
-    duydy = np.real(np.fft.ifft2(kappa * y_shift_neg * uy_k))[:, :Ny]
-
-    rhox = pml_x * (pml_x * rhox - dt * rho0 * duxdx)
-    rhoy = pml_y * (pml_y * rhoy - dt * rho0 * duydy)
-    p = c0**2 * (rhox + rhoy)
-
-    if t == 0:
-        p = p0.copy()
-        rhox = p0 / (2 * c0**2)
-        rhoy = p0 / (2 * c0**2)
+def run(p0_init, p_mode):
+    """One AS run: p0 IVP (p_mode None) or a time-varying pressure source."""
+    p = np.zeros((Nx, Ny)); ux = np.zeros((Nx, Ny)); uy = np.zeros((Nx, Ny))
+    rhox = np.zeros((Nx, Ny)); rhoy = np.zeros((Nx, Ny))
+    ts = np.zeros((mask_idx.size, NSTEPS))
+    for t in range(NSTEPS):
         dpdx, dpdy = pressure_gradients(p)
-        ux = dt / rho0 * dpdx / 2
-        uy = dt / rho0 * dpdy / 2
+        ux = pml_x_sg * (pml_x_sg * ux - dt / rho0 * dpdx)
+        uy = pml_y_sg * (pml_y_sg * uy - dt / rho0 * dpdy)
 
-    p_ts[:, t] = p.ravel()[mask_idx]
+        ux_k = kappa * np.fft.fft2(mirror_wswa(ux))
+        duxdx = np.real(np.fft.ifft2(ddx_neg * ux_k))[:, :Ny]
+        uy_k = ddy_k * np.fft.fft2(mirror_hahs(uy)) + np.fft.fft2(mirror_hsha(inv_y_sg * uy))
+        duydy = np.real(np.fft.ifft2(kappa * y_shift_neg * uy_k))[:, :Ny]
+
+        rhox = pml_x * (pml_x * rhox - dt * rho0 * duxdx)
+        rhoy = pml_y * (pml_y * rhoy - dt * rho0 * duydy)
+
+        # Pressure source (kspaceFirstOrder_scaleSourceTerms, N = 2 splits, uniform grid).
+        if p_mode == "dirichlet":
+            val = sig[t] / (2 * c0**2)
+            rhox.ravel()[src_idx] = val
+            rhoy.ravel()[src_idx] = val
+        elif p_mode == "additive":
+            mat = np.zeros((Nx, Ny))
+            mat.ravel()[src_idx] = sig[t] * 2 * dt / (2 * c0 * dx)
+            mat = np.real(np.fft.ifft2(source_kappa * np.fft.fft2(mirror_wswa(mat))))[:, :Ny]
+            rhox = rhox + mat
+            rhoy = rhoy + mat
+
+        p = c0**2 * (rhox + rhoy)
+
+        if t == 0 and p0_init is not None:
+            p = p0_init.copy()
+            rhox = p0_init / (2 * c0**2)
+            rhoy = p0_init / (2 * c0**2)
+            dpdx, dpdy = pressure_gradients(p)
+            ux = dt / rho0 * dpdx / 2
+            uy = dt / rho0 * dpdy / 2
+
+        ts[:, t] = p.ravel()[mask_idx]
+    return ts, p
+
+
+ts_ivp, pf_ivp = run(p0, None)
+ts_add, pf_add = run(None, "additive")
+ts_dir, pf_dir = run(None, "dirichlet")
 
 ref = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_as.h5")
 with h5py.File(ref, "w") as f:
@@ -124,8 +151,12 @@ with h5py.File(ref, "w") as f:
         f.create_dataset(k, data=np.float32(v))
     f.create_dataset("p0", data=p0.astype(np.float32))
     f.create_dataset("mask", data=mask.astype(np.float32))
-    f.create_dataset("p_ts", data=p_ts.astype(np.float32))
-    f.create_dataset("p_final", data=p.astype(np.float32))
+    f.create_dataset("src_mask", data=src_mask.astype(np.float32))
+    f.create_dataset("sig", data=sig.astype(np.float32))
+    for name, (ts, pf) in [("ivp", (ts_ivp, pf_ivp)), ("add", (ts_add, pf_add)),
+                           ("dir", (ts_dir, pf_dir))]:
+        f.create_dataset(f"p_ts_{name}", data=ts.astype(np.float32))
+        f.create_dataset(f"p_final_{name}", data=pf.astype(np.float32))
 
-print("wrote", ref, "max|p_ts|", float(np.max(np.abs(p_ts))),
-      "max|p_final|", float(np.max(np.abs(p))))
+print("wrote", ref, "|ivp|", float(np.max(np.abs(ts_ivp))),
+      "|add|", float(np.max(np.abs(ts_add))), "|dir|", float(np.max(np.abs(ts_dir))))

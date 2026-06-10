@@ -678,7 +678,7 @@ func referenceSoundSpeed(_ c0: MLXArray) -> Double {
 }
 
 /// Per-source-point sound-speed samples (the scalar broadcast to every point when `c0` is scalar).
-private func soundSpeedSamples(_ c0: MLXArray, at idx: MLXArray, count: Int) -> [Float] {
+func soundSpeedSamples(_ c0: MLXArray, at idx: MLXArray, count: Int) -> [Float] {
     if c0.size == 1 { return [Float](repeating: c0.item(Float.self), count: count) }
     return c0.reshaped([c0.size])[idx].asArray(Float.self)
 }

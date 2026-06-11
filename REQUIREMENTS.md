@@ -106,8 +106,8 @@ is aspirational; significant gaps remain).
 - ✅ Time-reversal reconstruction (`timeReversal` helper)
 - ✅ Sensor recording fields beyond `p`/`pFinal` (pMax/pMin/pRms, collocated ux/uy/uz, uMax/uRms, uFinal, iAvg)
 - ✅ Sensor directivity (2D, pressure + gradient patterns)
-- Real-time monitoring UI (Metal)
-- Movie recording (AVFoundation)
+- ✅ Real-time monitoring (`fieldMonitor` hook in all solvers + `FieldMonitorModel`/`SimulationMonitorView` SwiftUI; `Viz/`)
+- ✅ Movie recording (`MovieRecorder` AVFoundation H.264; wired to `SimulationOptions.recordMovie` in all solvers)
 - Full parity test suite
 
 ### Phase 3 — Extended Features ❌ (not started)

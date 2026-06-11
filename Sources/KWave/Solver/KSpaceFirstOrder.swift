@@ -29,6 +29,12 @@ public struct SimulationOptions {
     public var saveToDisk: String? = nil
     /// Per-step progress callback: `(tIndex, nt)`. Called once per time step.
     public var progress: ((Int, Int) -> Void)? = nil
+    /// Field monitor: called with `(tIndex, p)` every `fieldMonitorInterval` steps — the hook for
+    /// real-time display and movie recording. The array is the live pressure field; copy it if
+    /// retained beyond the callback.
+    public var fieldMonitor: ((Int, MLXArray) -> Void)? = nil
+    /// Steps between `fieldMonitor` calls (default 1 = every step).
+    public var fieldMonitorInterval: Int = 1
 
     public init() {}
 }
@@ -77,6 +83,14 @@ public func kspaceFirstOrder(
     sensor: KWaveSensor,
     options: SimulationOptions = .init()
 ) -> SimulationOutput {
+    if let path = options.recordMovie {
+        var opts = options
+        opts.recordMovie = nil
+        return withMovieRecording(options: opts, path: path) { patched in
+            kspaceFirstOrder(grid: grid, medium: medium, source: source,
+                             sensor: sensor, options: patched)
+        }
+    }
     switch grid.dim {
     case 1:
         return kspaceFirstOrder1D(grid: grid, medium: medium, source: source,
@@ -288,6 +302,9 @@ private func kspaceFirstOrder1D(
                 uxRec.append(sx)
             }
         }
+        if let monitor = options.fieldMonitor, t % max(options.fieldMonitorInterval, 1) == 0 {
+            monitor(t, p)
+        }
         options.progress?(t, grid.nt)
         MLX.eval(p, ux, rhox)
     }
@@ -454,6 +471,9 @@ private func kspaceFirstOrder2D(
                 MLX.eval(sx, sy)
                 uxRec.append(sx); uyRec.append(sy)
             }
+        }
+        if let monitor = options.fieldMonitor, t % max(options.fieldMonitorInterval, 1) == 0 {
+            monitor(t, p)
         }
         options.progress?(t, grid.nt)
         MLX.eval(p, ux, uy, rhox, rhoy)
@@ -635,6 +655,9 @@ private func kspaceFirstOrder3D(
                 MLX.eval(sx, sy, sz)
                 uxRec.append(sx); uyRec.append(sy); uzRec.append(sz)
             }
+        }
+        if let monitor = options.fieldMonitor, t % max(options.fieldMonitorInterval, 1) == 0 {
+            monitor(t, p)
         }
         options.progress?(t, grid.nt)
         MLX.eval(p, ux, uy, uz, rhox, rhoy, rhoz)

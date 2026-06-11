@@ -23,6 +23,14 @@ public func kspaceFirstOrderAS(
     sensor: KWaveSensor,
     options: SimulationOptions = .init()
 ) -> SimulationOutput {
+    if let path = options.recordMovie {
+        var opts = options
+        opts.recordMovie = nil
+        return withMovieRecording(options: opts, path: path) { patched in
+            kspaceFirstOrderAS(grid: grid, medium: medium, source: source,
+                               sensor: sensor, options: patched)
+        }
+    }
     precondition(grid.dim == 2, "axisymmetric solver requires a 2D grid (x axial, y radial)")
     precondition(grid.nt > 0, "call grid.makeTime(...) before running the solver")
     precondition(source.p0 != nil || source.pMask != nil || source.uMask != nil,
@@ -287,6 +295,9 @@ public func kspaceFirstOrderAS(
         }
 
         if let sampler, plan.recordP { pRec.append(sampler.sample(p)) }
+        if let monitor = options.fieldMonitor, t % max(options.fieldMonitorInterval, 1) == 0 {
+            monitor(t, p)
+        }
         options.progress?(t, grid.nt)
         MLX.eval(p, ux, uy, rhox, rhoy)
     }

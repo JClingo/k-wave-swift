@@ -95,3 +95,21 @@ with h5py.File(ref, "a") as f:
         f.create_dataset(f"w_ann{i}", data=w_ann[i].astype(np.float32))
 
 print("seg", seg.shape, "ann sums", [round(float(w.sum()), 3) for w in w_ann])
+
+# --- affine array transforms -------------------------------------------------
+arr5 = kWaveArray(bli_tolerance=0.1, upsampling_rate=10)
+arr5.add_arc_element(position=[-1.2e-3, 0.0], radius=2e-3, diameter=1.5e-3, focus_pos=[1e-3, 0.0])
+arr5.set_array_position([0.4e-3, -0.3e-3], 30.0)
+w_aff2 = np.asarray(arr5.get_element_grid_weights(g, 0))
+
+arr6 = kWaveArray(bli_tolerance=0.1, upsampling_rate=10)
+arr6.add_bowl_element(position=[-1.0e-3, 0.0, 0.0], radius=2.0e-3, diameter=1.4e-3,
+                      focus_pos=[1.0e-3, 0.2e-3, 0.1e-3])
+arr6.set_array_position([0.2e-3, -0.1e-3, 0.3e-3], [20.0, -15.0, 40.0])
+w_aff3 = np.asarray(arr6.get_element_grid_weights(g3, 0))
+
+with h5py.File(ref, "a") as f:
+    f.create_dataset("w_aff2", data=w_aff2.astype(np.float32))
+    f.create_dataset("w_aff3", data=w_aff3.astype(np.float32))
+
+print("aff2 sum", round(float(w_aff2.sum()), 4), "aff3 sum", round(float(w_aff3.sum()), 4))

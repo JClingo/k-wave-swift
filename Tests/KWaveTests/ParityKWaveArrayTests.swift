@@ -110,5 +110,18 @@ final class ParityKWaveArrayTests: XCTestCase {
         for i in 0..<4 {
             try check(arr4.elementGridWeights(grid: g3, element: i), "w_ann\(i)")
         }
+
+        // Affine array transforms: 2D translated+rotated arc; 3D translated + Euler-rotated bowl.
+        let arr5 = KWaveArray(bliTolerance: 0.1, upsamplingRate: 10)
+        arr5.addArcElement(position: (-1.2e-3, 0.0), radius: 2e-3, diameter: 1.5e-3,
+                           focusPos: (1e-3, 0.0))
+        arr5.setArrayPosition(translation: [0.4e-3, -0.3e-3], rotation: [30.0])
+        try check(arr5.elementGridWeights(grid: g2, element: 0), "w_aff2")
+
+        let arr6 = KWaveArray(bliTolerance: 0.1, upsamplingRate: 10)
+        arr6.addBowlElement(position: [-1.0e-3, 0.0, 0.0], radius: 2.0e-3, diameter: 1.4e-3,
+                            focusPos: [1.0e-3, 0.2e-3, 0.1e-3])
+        arr6.setArrayPosition(translation: [0.2e-3, -0.1e-3, 0.3e-3], rotation: [20.0, -15.0, 40.0])
+        try check(arr6.elementGridWeights(grid: g3, element: 0), "w_aff3")
     }
 }

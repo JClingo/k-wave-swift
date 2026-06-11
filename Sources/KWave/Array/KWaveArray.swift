@@ -28,6 +28,25 @@ public final class KWaveArray {
     public let bliTolerance: Double
     public let upsamplingRate: Int
     private var elements: [ArrayElement] = []
+    var arrayTransformation: [Double]? = nil   // row-major homogeneous 3×3 (2D) / 4×4 (3D).
+
+    /// Apply the array's affine transform to a physical point (identity when unset).
+    private func affine(_ vec: [Double]) -> [Double] {
+        guard let m = arrayTransformation else { return vec }
+        let n = vec.count
+        precondition((n == 2 && m.count == 9) || (n == 3 && m.count == 16),
+                     "affine transform dimensionality must match the point")
+        let stride = n + 1
+        return (0..<n).map { row in
+            var v = m[row * stride + n]                       // translation column.
+            for col in 0..<n { v += m[row * stride + col] * vec[col] }
+            return v
+        }
+    }
+    private func affine(_ vec: (Double, Double)) -> (Double, Double) {
+        let r = affine([vec.0, vec.1])
+        return (r[0], r[1])
+    }
 
     public var numberElements: Int { elements.count }
 
@@ -116,11 +135,13 @@ public final class KWaveArray {
         let mGrid = measureInGridCells(el, grid)
         let mIntRequested = Int(ceil(mGrid * Double(upsamplingRate)))
 
+        // The array transform applies to element positions and foci (rect: position only,
+        // orientation untouched; line: not transformed) — matching k-wave-python.
         let points: MLXArray
         switch el.geometry {
         case let .arc(position, radius, diameter, focus):
-            points = makeCartArc(arcPos: position, radius: radius, diameter: diameter,
-                                 focusPos: focus, numPoints: mIntRequested)
+            points = makeCartArc(arcPos: affine(position), radius: radius, diameter: diameter,
+                                 focusPos: affine(focus), numPoints: mIntRequested)
         case let .line(start, end):
             // Uniform points along the line, inset half a spacing from each end.
             let d = zip(start, end).map { ($1 - $0) / Double(mIntRequested) }
@@ -134,19 +155,19 @@ public final class KWaveArray {
             }
             points = MLXArray(data).reshaped([2, mIntRequested])
         case let .rect(position, lx, ly, theta):
-            points = makeCartRect(center: position, lx: lx, ly: ly, theta: theta,
+            points = makeCartRect(center: affine(position), lx: lx, ly: ly, theta: theta,
                                   numPoints: mIntRequested)
         case let .disc(position, diameter, focus):
-            points = makeCartDisc(discPos: position, radius: diameter / 2, focusPos: focus,
-                                  numPoints: mIntRequested)
+            points = makeCartDisc(discPos: affine(position), radius: diameter / 2,
+                                  focusPos: focus.map(affine), numPoints: mIntRequested)
         case let .bowl(position, radius, diameter, focus):
-            points = makeCartBowl(bowlPos: position, radius: radius, diameter: diameter,
-                                  focusPos: focus, numPoints: mIntRequested)
+            points = makeCartBowl(bowlPos: affine(position), radius: radius, diameter: diameter,
+                                  focusPos: affine(focus), numPoints: mIntRequested)
         case let .annulus(position, radius, innerDiameter, outerDiameter, focus):
-            points = makeCartSphericalSegment(bowlPos: position, radius: radius,
+            points = makeCartSphericalSegment(bowlPos: affine(position), radius: radius,
                                               innerDiameter: innerDiameter,
                                               outerDiameter: outerDiameter,
-                                              focusPos: focus, numPoints: mIntRequested)
+                                              focusPos: affine(focus), numPoints: mIntRequested)
         }
 
         // Scale uses the actual generated point count (some samplers round up to a full grid),
@@ -272,4 +293,45 @@ func trimCartPoints(grid: KWaveGrid, points: MLXArray) -> MLXArray {
         for axis in 0..<dim { out[axis * keep.count + j] = host[axis * n + p] }
     }
     return MLXArray(out).reshaped([dim, keep.count])
+}
+
+/// Affine transformation matrix combining rotation and translation (k-wave-python `make_affine`),
+/// returned row-major: 3×3 homogeneous for 2D (`rotation` = z-angle in degrees), 4×4 for 3D
+/// (`rotation` = extrinsic x-y-z Euler angles in degrees, applied as `Rz·Ry·Rx`).
+public func makeAffine(translation: [Double], rotation: [Double]) -> [Double] {
+    func deg(_ a: Double) -> Double { a * .pi / 180 }
+    if translation.count == 2 {
+        precondition(rotation.count == 1, "2D affine takes a single z-rotation angle")
+        let c = cos(deg(rotation[0])), s = sin(deg(rotation[0]))
+        return [c, -s, translation[0],
+                s,  c, translation[1],
+                0,  0, 1]
+    }
+    precondition(translation.count == 3 && rotation.count == 3,
+                 "3D affine takes 3 translations and 3 Euler angles")
+    let (a, b, g) = (deg(rotation[0]), deg(rotation[1]), deg(rotation[2]))
+    let (ca, sa) = (cos(a), sin(a)), (cb, sb) = (cos(b), sin(b)), (cg, sg) = (cos(g), sin(g))
+    // Extrinsic xyz: R = Rz(γ)·Ry(β)·Rx(α).
+    let r = [cg * cb, cg * sb * sa - sg * ca, cg * sb * ca + sg * sa,
+             sg * cb, sg * sb * sa + cg * ca, sg * sb * ca - cg * sa,
+             -sb,     cb * sa,                cb * ca]
+    return [r[0], r[1], r[2], translation[0],
+            r[3], r[4], r[5], translation[1],
+            r[6], r[7], r[8], translation[2],
+            0, 0, 0, 1]
+}
+
+extension KWaveArray {
+    /// Position the whole array with a translation and rotation (k-Wave `set_array_position`).
+    /// 2D: `rotation` = one z-angle [deg]; 3D: extrinsic x-y-z Euler angles [deg].
+    public func setArrayPosition(translation: [Double], rotation: [Double]) {
+        setAffineTransform(makeAffine(translation: translation, rotation: rotation))
+    }
+
+    /// Set the array's affine transform directly (row-major homogeneous 3×3 for 2D, 4×4 for 3D).
+    public func setAffineTransform(_ matrix: [Double]) {
+        precondition(matrix.count == 9 || matrix.count == 16,
+                     "affine transform must be a 3×3 (2D) or 4×4 (3D) homogeneous matrix")
+        arrayTransformation = matrix
+    }
 }

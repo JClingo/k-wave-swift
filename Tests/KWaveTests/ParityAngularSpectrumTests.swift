@@ -104,6 +104,18 @@ final class ParityAngularSpectrumTests: XCTestCase {
             inputPlane: input, dx: dx, dt: dt, zPos: [1e-3], soundSpeed: c0, gridExpansion: 4)
         let geSlice = pmaxGE[0..<geShape[0], 0..<geShape[1], 0..<1].reshaped(geShape)
         assertClose(geSlice, geData, geShape, "pressure_max grid_expansion")
+
+        // Reverse projection (single z; time-reversed input/outputs).
+        let (rvShape, rvData) = try f.readFloatDataset("pmax_rev")
+        let (rtShape, rtData) = try f.readFloatDataset("ptime_rev")
+        let (pmaxRev, ptimeRev) = angularSpectrum(
+            inputPlane: input, dx: dx, dt: dt, zPos: [1e-3], soundSpeed: c0,
+            recordTimeSeries: true, reverseProj: true)
+        let rvSlice = pmaxRev[0..<rvShape[0], 0..<rvShape[1], 0..<1].reshaped(rvShape)
+        assertClose(rvSlice, rvData, rvShape, "pressure_max reverse")
+        let rtSlice = ptimeRev![0..<rtShape[0], 0..<rtShape[1], 0..<rtShape[2], 0..<1]
+            .reshaped(rtShape)
+        assertClose(rtSlice, rtData, rtShape, "pressure_time reverse")
     }
 
     /// Parity for the absorbing branch (Eq. 11). The upstream Python absorbing path is dead code

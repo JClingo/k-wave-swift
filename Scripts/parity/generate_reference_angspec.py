@@ -55,3 +55,13 @@ with h5py.File(ref, "w") as f:
 
 print("wrote", ref, "pmax", pmax.shape, "max", round(float(pmax.max()), 5),
       "ge max", round(float(pmax_ge.max()), 5))
+
+# --- reverse projection ------------------------------------------------------
+out_rev = angular_spectrum(input_plane, dx, dt, 1e-3, c0, record_time_series=True,
+                           reverse_proj=True)
+pmax_rev = np.asarray(out_rev[0])[:, :, 0]
+ptime_rev = np.asarray(out_rev[1])[:, :, :, 0]
+with h5py.File(ref, "a") as f:
+    f.create_dataset("pmax_rev", data=pmax_rev.astype(np.float32))
+    f.create_dataset("ptime_rev", data=ptime_rev.astype(np.float32))
+print("rev pmax max", round(float(np.max(np.abs(pmax_rev))), 5))

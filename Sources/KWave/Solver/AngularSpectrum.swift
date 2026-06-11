@@ -110,8 +110,8 @@ private func spectralPropagator(
 /// (with angular restriction), and the time series is rebuilt from the (conjugate-symmetric)
 /// spectrum. Returns the maximum pressure over time at each plane, and optionally the full series.
 ///
-/// Scope: lossless medium (scalar sound speed). Absorption, reverse projection, and data casting
-/// from the MATLAB/Python API are not implemented.
+/// Supports power-law absorption (`alphaCoeff`/`alphaPower`), grid expansion, and reverse
+/// projection; data casting from the MATLAB/Python API is not applicable.
 ///
 /// Note: k-wave-python's even-`Nt` double-sided spectrum rebuild drops one bin (`[1:-2]`, an
 /// upstream off-by-one vs MATLAB's `2:end-1`); this port uses the correct MATLAB formula, so for
@@ -130,7 +130,7 @@ public func angularSpectrum(
     inputPlane: MLXArray, dx: Double, dt: Double, zPos: [Double], soundSpeed: Double,
     alphaCoeff: Double? = nil, alphaPower: Double? = nil,
     angularRestriction: Bool = true, gridExpansion: Int = 0, fftLength: Int? = nil,
-    recordTimeSeries: Bool = false
+    recordTimeSeries: Bool = false, reverseProj: Bool = false
 ) -> (pressureMax: MLXArray, pressureTime: MLXArray?) {
     precondition(inputPlane.ndim == 3, "inputPlane must be [Nx, Ny, Nt]")
     precondition(!zPos.isEmpty, "zPos must have at least one position")
@@ -140,6 +140,11 @@ public func angularSpectrum(
                  "temporal sampling cannot resolve the maximum spatial frequency (CFL > 1)")
 
     var input = inputPlane.asType(.float32)
+    if reverseProj {
+        // Project backwards: reverse the time signals, project, and reverse the outputs again.
+        let nt0 = input.dim(2)
+        input = MLX.take(input, MLXArray((0..<nt0).reversed().map { Int32($0) }), axis: 2)
+    }
     if gridExpansion > 0 {
         input = MLX.padded(input, widths: [.init((gridExpansion, gridExpansion)),
                                            .init((gridExpansion, gridExpansion)),
@@ -211,6 +216,13 @@ public func angularSpectrum(
         let g = gridExpansion
         pressureMax = pressureMax[g..<(nx - g), g..<(ny - g), 0..<zPos.count]
         pressureTime = pressureTime.map { $0[g..<(nx - g), g..<(ny - g), 0..<nt, 0..<zPos.count] }
+    }
+    if reverseProj {
+        // Mirror k-wave-python: pressure_max flips over the z axis, the time series over time.
+        let revZ = MLXArray((0..<zPos.count).reversed().map { Int32($0) })
+        pressureMax = MLX.take(pressureMax, revZ, axis: 2)
+        let revT = MLXArray((0..<nt).reversed().map { Int32($0) })
+        pressureTime = pressureTime.map { MLX.take($0, revT, axis: 2) }
     }
     return (pressureMax, pressureTime)
 }

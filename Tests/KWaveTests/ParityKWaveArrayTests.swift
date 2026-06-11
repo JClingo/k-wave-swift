@@ -96,5 +96,19 @@ final class ParityKWaveArrayTests: XCTestCase {
         arr3.addBowlElement(position: [-1.0e-3, 0.0, 0.0], radius: 2.0e-3, diameter: 1.4e-3,
                             focusPos: [1.0e-3, 0.2e-3, 0.1e-3])
         try check(arr3.elementGridWeights(grid: g3, element: 0), "w_bowl")
+
+        // Spherical-segment sampler and a 4-element annular array (LIFU-style).
+        try check(makeCartSphericalSegment(bowlPos: [-1.0e-3, 0.0, 0.0], radius: 2.0e-3,
+                                           innerDiameter: 0.6e-3, outerDiameter: 1.2e-3,
+                                           focusPos: [1.0e-3, 0.2e-3, 0.1e-3], numPoints: 70),
+                  "seg")
+        let arr4 = KWaveArray(bliTolerance: 0.1, upsamplingRate: 10)
+        arr4.addAnnularArray(position: [-1.0e-3, 0.0, 0.0], radius: 2.0e-3,
+                             diameters: [(0.0, 0.5e-3), (0.6e-3, 0.9e-3),
+                                         (1.0e-3, 1.3e-3), (1.4e-3, 1.6e-3)],
+                             focusPos: [1.0e-3, 0.0, 0.0])
+        for i in 0..<4 {
+            try check(arr4.elementGridWeights(grid: g3, element: i), "w_ann\(i)")
+        }
     }
 }

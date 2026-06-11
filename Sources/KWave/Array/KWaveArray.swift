@@ -7,8 +7,8 @@ import MLX
 /// band-limited interpolant (`offGridPoints`), giving grid weights that drive or sample the
 /// element off-grid.
 ///
-/// Elements: 2D `arc`, `line`, `rect`, `disc`; 3D `disc` and focused `bowl`. Affine array
-/// transforms and annulus elements are not yet implemented.
+/// Elements: 2D `arc`, `line`, `rect`, `disc`; 3D `disc`, focused `bowl`, and `annulus`
+/// (spherical segments / annular arrays). Affine array transforms are not yet implemented.
 public final class KWaveArray {
     private enum Geometry {
         case arc(position: (Double, Double), radius: Double, diameter: Double, focus: (Double, Double))
@@ -16,6 +16,8 @@ public final class KWaveArray {
         case rect(position: (Double, Double), lx: Double, ly: Double, theta: Double)
         case disc(position: [Double], diameter: Double, focus: [Double]?)
         case bowl(position: [Double], radius: Double, diameter: Double, focus: [Double])
+        case annulus(position: [Double], radius: Double, innerDiameter: Double,
+                     outerDiameter: Double, focus: [Double])
     }
     private struct ArrayElement {
         let geometry: Geometry
@@ -79,6 +81,29 @@ public final class KWaveArray {
                                      dim: 2, measure: area))
     }
 
+    /// Add a single 3D annular (spherical-segment) element.
+    public func addAnnularElement(position: [Double], radius: Double,
+                                  diameters: (inner: Double, outer: Double), focusPos: [Double]) {
+        precondition(position.count == 3 && focusPos.count == 3, "annular elements are 3D")
+        let varphiMin = asin(diameters.inner / (2 * radius))
+        let varphiMax = asin(diameters.outer / (2 * radius))
+        let area = 2 * Double.pi * radius * radius * (cos(varphiMin) - cos(varphiMax))
+        elements.append(ArrayElement(geometry: .annulus(position: position, radius: radius,
+                                                        innerDiameter: diameters.inner,
+                                                        outerDiameter: diameters.outer,
+                                                        focus: focusPos),
+                                     dim: 2, measure: area))
+    }
+
+    /// Add a 3D annular array: one annular element per `(inner, outer)` diameter pair, sharing the
+    /// bowl position, radius of curvature, and focus (k-Wave `add_annular_array`).
+    public func addAnnularArray(position: [Double], radius: Double,
+                                diameters: [(inner: Double, outer: Double)], focusPos: [Double]) {
+        for d in diameters {
+            addAnnularElement(position: position, radius: radius, diameters: d, focusPos: focusPos)
+        }
+    }
+
     /// Element measure in grid cells (assumes dx == dy).
     private func measureInGridCells(_ el: ArrayElement, _ grid: KWaveGrid) -> Double {
         el.measure / pow(grid.dx, Double(el.dim))
@@ -117,6 +142,11 @@ public final class KWaveArray {
         case let .bowl(position, radius, diameter, focus):
             points = makeCartBowl(bowlPos: position, radius: radius, diameter: diameter,
                                   focusPos: focus, numPoints: mIntRequested)
+        case let .annulus(position, radius, innerDiameter, outerDiameter, focus):
+            points = makeCartSphericalSegment(bowlPos: position, radius: radius,
+                                              innerDiameter: innerDiameter,
+                                              outerDiameter: outerDiameter,
+                                              focusPos: focus, numPoints: mIntRequested)
         }
 
         // Scale uses the actual generated point count (some samplers round up to a full grid),

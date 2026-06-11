@@ -77,3 +77,21 @@ with h5py.File(ref, "a") as f:
 
 print("disc2", disc2.shape, "disc3", disc3.shape, "bowl", bowl.shape,
       "w_disc2 sum", round(float(w_disc2.sum()), 4), "w_bowl sum", round(float(w_bowl.sum()), 4))
+
+# --- annular array (LIFU-style 4-element) -----------------------------------
+from kwave.utils.mapgen import make_cart_spherical_segment
+
+seg = make_cart_spherical_segment(np.array([-1.0e-3, 0.0, 0.0]), 2.0e-3, 0.6e-3, 1.2e-3,
+                                  np.array([1.0e-3, 0.2e-3, 0.1e-3]), 70)
+
+arr4 = kWaveArray(bli_tolerance=0.1, upsampling_rate=10)
+diams = [[0.0, 0.5e-3], [0.6e-3, 0.9e-3], [1.0e-3, 1.3e-3], [1.4e-3, 1.6e-3]]
+arr4.add_annular_array([-1.0e-3, 0.0, 0.0], 2.0e-3, diams, [1.0e-3, 0.0, 0.0])
+w_ann = [np.asarray(arr4.get_element_grid_weights(g3, i)) for i in range(4)]
+
+with h5py.File(ref, "a") as f:
+    f.create_dataset("seg", data=np.asarray(seg, np.float32))
+    for i in range(4):
+        f.create_dataset(f"w_ann{i}", data=w_ann[i].astype(np.float32))
+
+print("seg", seg.shape, "ann sums", [round(float(w.sum()), 3) for w in w_ann])

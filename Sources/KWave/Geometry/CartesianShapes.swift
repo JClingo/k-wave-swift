@@ -288,3 +288,52 @@ public func makeCartBowl(
     }
     return MLXArray(data).reshaped([3, numPoints])
 }
+
+/// Cartesian points covering a spherical segment (annular section of a focused bowl), mirroring
+/// k-Wave `makeCartSphericalSegment`: a golden-angle spiral over the cap band between the inner
+/// and outer aperture diameters. `numPointsInner` forces point positions to align with the inner
+/// elements of a contiguous annular array (0 = standalone segment).
+public func makeCartSphericalSegment(
+    bowlPos: [Double], radius: Double, innerDiameter: Double, outerDiameter: Double,
+    focusPos: [Double], numPoints: Int, numPointsInner: Int = 0
+) -> MLXArray {
+    precondition(bowlPos.count == 3 && focusPos.count == 3, "bowlPos/focusPos must be 3D")
+    precondition(radius > 0 && radius.isFinite, "radius must be positive and finite")
+    precondition(innerDiameter >= 0 && innerDiameter < outerDiameter, "need inner < outer diameter")
+    precondition(outerDiameter <= 2 * radius, "outer diameter must be ≤ 2·radius")
+    precondition(bowlPos != focusPos, "focusPos must differ from bowlPos")
+
+    let goldenAngle = 2.39996322972865332223155550663361385312499901105811504
+    let varphiMin = asin(innerDiameter / (2 * radius))
+    let varphiMax = asin(outerDiameter / (2 * radius))
+
+    let c: Double, tStart: Double, tEnd: Double
+    if numPointsInner > 0 {
+        c = (1 - cos(varphiMax)) / Double(numPoints + numPointsInner - 1)
+        tStart = ceil((1 - cos(varphiMin)) / c)
+        tEnd = Double(numPointsInner + numPoints - 1)
+    } else {
+        c = (1 - cos(varphiMax)) / Double(numPoints - 1)
+        tStart = ceil((1 - cos(varphiMin)) / c)
+        tEnd = Double(numPoints - 1)
+    }
+
+    let (r, dir) = rotationToBeamAxis(from: bowlPos, to: focusPos)
+    let b = (0..<3).map { bowlPos[$0] + radius * dir[$0] }
+
+    var data = [Float](repeating: 0, count: 3 * numPoints)
+    for i in 0..<numPoints {
+        let t = numPoints == 1 ? tStart
+            : tStart + (tEnd - tStart) * Double(i) / Double(numPoints - 1)
+        let theta = goldenAngle * t
+        let varphi = acos(1 - c * t)
+        let p = [radius * cos(theta) * sin(varphi),
+                 radius * sin(theta) * sin(varphi),
+                 radius * cos(varphi)]
+        for row in 0..<3 {
+            let v = r[row * 3] * p[0] + r[row * 3 + 1] * p[1] + r[row * 3 + 2] * p[2]
+            data[row * numPoints + i] = Float(v + b[row])
+        }
+    }
+    return MLXArray(data).reshaped([3, numPoints])
+}

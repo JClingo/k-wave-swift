@@ -117,8 +117,13 @@ public func fitPowerLawParams(
     a0: Double, y: Double, c0: Double, fMin: Double, fMax: Double
 ) -> (a0: Double, y: Double) {
     let nPoints = 200
-    let w = (0..<nPoints).map { i in
-        2 * Double.pi * (fMin + (fMax - fMin) * Double(i) / Double(nPoints - 1))
+    let angularFrequencyScale = 2.0 * Double.pi
+    let frequencyStep = (fMax - fMin) / Double(nPoints - 1)
+    var w = [Double]()
+    w.reserveCapacity(nPoints)
+    for i in 0..<nPoints {
+        let frequency = fMin + frequencyStep * Double(i)
+        w.append(angularFrequencyScale * frequency)
     }
     let a0Np = db2neper(a0, y: y)
     let desired = w.map { a0Np * pow($0, y) }

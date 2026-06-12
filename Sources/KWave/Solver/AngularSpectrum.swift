@@ -40,7 +40,7 @@ public func angularSpectrumCW(
     let n = fftLength ?? (1 << (nextPow2(max(nx, ny)) + 1))
 
     // FFTW-ordered wavenumbers (centered + forced-zero + ifftshift ≡ 2π·fftfreq).
-    let kvec = MLXArray(wavenumberVector(n, d: dx)).asType(.float32)
+    let kvec = MLXArray(converting: wavenumberVector(n, d: dx))
     let kx = kvec.reshaped([1, n]), ky = kvec.reshaped([n, 1])
     let k = 2 * Double.pi * f0 / soundSpeed
     let kxy2 = kx * kx + ky * ky                 // broadcasts to [n, n].
@@ -153,7 +153,7 @@ public func angularSpectrum(
     let nx = input.dim(0), ny = input.dim(1), nt = input.dim(2)
 
     let n = fftLength ?? (1 << (nextPow2(max(nx, ny)) + 1))
-    let kvec = MLXArray(wavenumberVector(n, d: dx)).asType(.float32)
+    let kvec = MLXArray(converting: wavenumberVector(n, d: dx))
     let kxy2 = kvec.reshaped([1, n]) * kvec.reshaped([1, n])
         + kvec.reshaped([n, 1]) * kvec.reshaped([n, 1])
     let sqrtKxy = MLX.sqrt(kxy2)

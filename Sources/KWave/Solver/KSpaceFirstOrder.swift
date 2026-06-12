@@ -106,6 +106,23 @@ public func kspaceFirstOrder(
     }
 }
 
+// MARK: - Per-step evaluation
+
+/// Steps between synchronous `eval` calls in the time loop.
+private let evalSyncInterval = 128
+
+/// Flush the step's compute graph without stalling the pipeline. A synchronous `eval` every
+/// step forces a CPU–GPU round trip whose latency dominates on small grids; `asyncEval`
+/// dispatches the work and returns, while a synchronous `eval` every `evalSyncInterval`
+/// steps (and on the last step) bounds the in-flight graph.
+private func stepEval(t: Int, nt: Int, _ arrays: MLXArray...) {
+    if t % evalSyncInterval == evalSyncInterval - 1 || t == nt - 1 {
+        MLX.eval(arrays)
+    } else if t % 4 == 3 {
+        MLX.asyncEval(arrays)
+    }
+}
+
 // MARK: - Time-varying source injection
 
 /// One field-variable source operator, mirroring k-wave-python `_build_source_op`.
@@ -265,25 +282,40 @@ private func kspaceFirstOrder1D(
     let collocX = plan.recordU ? collocationOp(grid.kxVec, spacing: grid.dx) : nil
     var pRec: [MLXArray] = [], uxRec: [MLXArray] = []
 
-    for t in 0..<grid.nt {
-        // Velocity update.
+    // Compiled step blocks — see the 2D solver for rationale.
+    let velStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let p = args[0], ux = args[1]
         let pk = MLXFFT.fft(p.asType(.complex64))
         let dpdx = MLXFFT.ifft(ddxPos * kappa * pk).realPart()
-        ux = pmlXsg * (pmlXsg * ux - dtOverRhoX * dpdx)
-        if let op = uOpX { ux = op.apply(ux, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-
-        // Density update. nl_factor uses the previous step's density (before this update).
+        return [pmlXsg * (pmlXsg * ux - dtOverRhoX * dpdx)]
+    }
+    // nl_factor uses the previous step's density (before this update).
+    let rhoStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let ux = args[0], rhox = args[1]
         let nlFactor = nonlinear?.factor(rhox)
         let duxdx = MLXFFT.ifft(ddxNeg * kappa * MLXFFT.fft(ux.asType(.complex64))).realPart()
         let massX = nlFactor.map { dtRho0 * duxdx * $0 } ?? (dtRho0 * duxdx)
-        rhox = pmlX * (pmlX * rhox - massX)
-        if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-
-        // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
+        return [pmlX * (pmlX * rhox - massX), duxdx]
+    }
+    // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
+    let eosStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let rhox = args[0], duxdx = args[1]
         var eosRho = rhox
         if let absorb { eosRho = eosRho + absorb.eosTerm(divU: duxdx, rho: rhox) }
         if let nonlinear { eosRho = eosRho + nonlinear.term(rhox) }
-        p = c2Grid * eosRho
+        return [c2Grid * eosRho]
+    }
+
+    for t in 0..<grid.nt {
+        ux = velStep([p, ux])[0]
+        if let op = uOpX { ux = op.apply(ux, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+
+        let rv = rhoStep([ux, rhox])
+        let duxdx = rv[1]
+        rhox = rv[0]
+        if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+
+        p = eosStep([rhox, duxdx])[0]
 
         // t=0 leapfrog override for an initial-pressure source.
         if t == 0, let f = p0Field {
@@ -298,7 +330,7 @@ private func kspaceFirstOrder1D(
             if plan.recordU {
                 let uxC = MLXFFT.ifft(collocX! * MLXFFT.fft(ux.asType(.complex64))).realPart()
                 let sx = sampler.sample(uxC)
-                MLX.eval(sx)
+                MLX.asyncEval(sx)
                 uxRec.append(sx)
             }
         }
@@ -306,7 +338,7 @@ private func kspaceFirstOrder1D(
             monitor(t, p)
         }
         options.progress?(t, grid.nt)
-        MLX.eval(p, ux, rhox)
+        stepEval(t: t, nt: grid.nt, p, ux, rhox)
     }
 
     return finalizeRecording(
@@ -409,6 +441,47 @@ private func kspaceFirstOrder2D(
     var rhox = MLXArray.zeros(shape, dtype: .float32)
     var rhoy = MLXArray.zeros(shape, dtype: .float32)
 
+    // The per-step update math is compiled so MLX fuses the elementwise chains into a few
+    // kernels — uncompiled, per-op dispatch overhead dominates on small grids. Source
+    // injection sits between the blocks (it is t-dependent), so the step splits into
+    // velocity / density / equation-of-state functions.
+    let velStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let p = args[0], ux = args[1], uy = args[2]
+        let pk = MLXFFT.fft2(p.asType(.complex64))
+        let dpdx = MLXFFT.ifft2(ddxPos * kappa * pk).realPart()
+        let dpdy = MLXFFT.ifft2(ddyPos * kappa * pk).realPart()
+        return [pmlXsg * (pmlXsg * ux - dtOverRhoX * dpdx),
+                pmlYsg * (pmlYsg * uy - dtOverRhoY * dpdy)]
+    }
+    // nl_factor uses the previous step's density (before this update).
+    let rhoStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let ux = args[0], uy = args[1], rhox = args[2], rhoy = args[3]
+        let nlFactor = nonlinear?.factor(rhox + rhoy)
+        let duxdx = MLXFFT.ifft2(ddxNeg * kappa * MLXFFT.fft2(ux.asType(.complex64))).realPart()
+        let duydy = MLXFFT.ifft2(ddyNeg * kappa * MLXFFT.fft2(uy.asType(.complex64))).realPart()
+        let massX = nlFactor.map { dtRho0 * duxdx * $0 } ?? (dtRho0 * duxdx)
+        let massY = nlFactor.map { dtRho0 * duydy * $0 } ?? (dtRho0 * duydy)
+        return [pmlX * (pmlX * rhox - massX), pmlY * (pmlY * rhoy - massY), duxdx, duydy]
+    }
+    // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
+    let eosStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let rhox = args[0], rhoy = args[1], duxdx = args[2], duydy = args[3]
+        let rhoTotal = rhox + rhoy
+        var eosRho = rhoTotal
+        if let absorb { eosRho = eosRho + absorb.eosTerm(divU: duxdx + duydy, rho: rhoTotal) }
+        if let nonlinear { eosRho = eosRho + nonlinear.term(rhoTotal) }
+        return [c2Grid * eosRho]
+    }
+    // With no time-varying sources the whole step compiles as one function, saving the
+    // per-block call boundaries that dominate on small grids.
+    let noSources = uOpX == nil && uOpY == nil && pOpX == nil && pOpY == nil
+    let fullStep: (@Sendable ([MLXArray]) -> [MLXArray])? = !noSources ? nil
+        : MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+            let uv = velStep([args[0], args[1], args[2]])
+            let rv = rhoStep([uv[0], uv[1], args[3], args[4]])
+            return [eosStep([rv[0], rv[1], rv[2], rv[3]])[0], uv[0], uv[1], rv[0], rv[1]]
+        }
+
     let plan = RecordPlan(sensor.record)
     let sampler: SensorSampler? = sensor.mask.map { makeSensorSampler(mask: $0, grid: grid) }
     let directivity = makeDirectivityFilter(sensor: sensor, grid: grid)
@@ -417,32 +490,25 @@ private func kspaceFirstOrder2D(
     var pRec: [MLXArray] = [], uxRec: [MLXArray] = [], uyRec: [MLXArray] = []
 
     for t in 0..<grid.nt {
-        // Velocity update.
-        let pk = MLXFFT.fft2(p.asType(.complex64))
-        let dpdx = MLXFFT.ifft2(ddxPos * kappa * pk).realPart()
-        let dpdy = MLXFFT.ifft2(ddyPos * kappa * pk).realPart()
-        ux = pmlXsg * (pmlXsg * ux - dtOverRhoX * dpdx)
-        if let op = uOpX { ux = op.apply(ux, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        uy = pmlYsg * (pmlYsg * uy - dtOverRhoY * dpdy)
-        if let op = uOpY { uy = op.apply(uy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+        if let fullStep {
+            let out = fullStep([p, ux, uy, rhox, rhoy])
+            p = out[0]; ux = out[1]; uy = out[2]; rhox = out[3]; rhoy = out[4]
+        } else {
+            let uv = velStep([p, ux, uy])
+            ux = uv[0]
+            if let op = uOpX { ux = op.apply(ux, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+            uy = uv[1]
+            if let op = uOpY { uy = op.apply(uy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Density update. nl_factor uses the previous step's density (before this update).
-        let nlFactor = nonlinear?.factor(rhox + rhoy)
-        let duxdx = MLXFFT.ifft2(ddxNeg * kappa * MLXFFT.fft2(ux.asType(.complex64))).realPart()
-        let duydy = MLXFFT.ifft2(ddyNeg * kappa * MLXFFT.fft2(uy.asType(.complex64))).realPart()
-        let massX = nlFactor.map { dtRho0 * duxdx * $0 } ?? (dtRho0 * duxdx)
-        let massY = nlFactor.map { dtRho0 * duydy * $0 } ?? (dtRho0 * duydy)
-        rhox = pmlX * (pmlX * rhox - massX)
-        if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        rhoy = pmlY * (pmlY * rhoy - massY)
-        if let op = pOpY { rhoy = op.apply(rhoy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+            let rv = rhoStep([ux, uy, rhox, rhoy])
+            let duxdx = rv[2], duydy = rv[3]
+            rhox = rv[0]
+            if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+            rhoy = rv[1]
+            if let op = pOpY { rhoy = op.apply(rhoy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
 
-        // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
-        let rhoTotal = rhox + rhoy
-        var eosRho = rhoTotal
-        if let absorb { eosRho = eosRho + absorb.eosTerm(divU: duxdx + duydy, rho: rhoTotal) }
-        if let nonlinear { eosRho = eosRho + nonlinear.term(rhoTotal) }
-        p = c2Grid * eosRho
+            p = eosStep([rhox, rhoy, duxdx, duydy])[0]
+        }
 
         // t=0 leapfrog override for an initial-pressure source.
         if t == 0, let f = p0Field {
@@ -458,7 +524,7 @@ private func kspaceFirstOrder2D(
             if plan.recordP {
                 if let directivity {
                     let s = directivity.apply(pk: MLXFFT.fft2(p.asType(.complex64)))
-                    MLX.eval(s)
+                    MLX.asyncEval(s)
                     pRec.append(s)
                 } else {
                     pRec.append(sampler.sample(p))
@@ -468,7 +534,7 @@ private func kspaceFirstOrder2D(
                 let uxC = MLXFFT.ifft2(collocX! * MLXFFT.fft2(ux.asType(.complex64))).realPart()
                 let uyC = MLXFFT.ifft2(collocY! * MLXFFT.fft2(uy.asType(.complex64))).realPart()
                 let sx = sampler.sample(uxC), sy = sampler.sample(uyC)
-                MLX.eval(sx, sy)
+                MLX.asyncEval(sx, sy)
                 uxRec.append(sx); uyRec.append(sy)
             }
         }
@@ -476,7 +542,7 @@ private func kspaceFirstOrder2D(
             monitor(t, p)
         }
         options.progress?(t, grid.nt)
-        MLX.eval(p, ux, uy, rhox, rhoy)
+        stepEval(t: t, nt: grid.nt, p, ux, uy, rhox, rhoy)
     }
 
     return finalizeRecording(
@@ -599,20 +665,21 @@ private func kspaceFirstOrder3D(
     let collocZ = plan.recordU ? collocationOp(grid.kzVec, spacing: grid.dz).reshaped([1, 1, nz]) : nil
     var pRec: [MLXArray] = [], uxRec: [MLXArray] = [], uyRec: [MLXArray] = [], uzRec: [MLXArray] = []
 
-    for t in 0..<grid.nt {
-        // Velocity update.
+    // Compiled step blocks — see the 2D solver for rationale.
+    let velStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let p = args[0], ux = args[1], uy = args[2], uz = args[3]
         let pk = MLXFFT.fftn(p.asType(.complex64))
         let dpdx = MLXFFT.ifftn(ddxPos * kappa * pk).realPart()
         let dpdy = MLXFFT.ifftn(ddyPos * kappa * pk).realPart()
         let dpdz = MLXFFT.ifftn(ddzPos * kappa * pk).realPart()
-        ux = pmlXsg * (pmlXsg * ux - dtOverRhoX * dpdx)
-        if let op = uOpX { ux = op.apply(ux, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        uy = pmlYsg * (pmlYsg * uy - dtOverRhoY * dpdy)
-        if let op = uOpY { uy = op.apply(uy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        uz = pmlZsg * (pmlZsg * uz - dtOverRhoZ * dpdz)
-        if let op = uOpZ { uz = op.apply(uz, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-
-        // Density update. nl_factor uses the previous step's density (before this update).
+        return [pmlXsg * (pmlXsg * ux - dtOverRhoX * dpdx),
+                pmlYsg * (pmlYsg * uy - dtOverRhoY * dpdy),
+                pmlZsg * (pmlZsg * uz - dtOverRhoZ * dpdz)]
+    }
+    // nl_factor uses the previous step's density (before this update).
+    let rhoStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let ux = args[0], uy = args[1], uz = args[2]
+        let rhox = args[3], rhoy = args[4], rhoz = args[5]
         let nlFactor = nonlinear?.factor(rhox + rhoy + rhoz)
         let duxdx = MLXFFT.ifftn(ddxNeg * kappa * MLXFFT.fftn(ux.asType(.complex64))).realPart()
         let duydy = MLXFFT.ifftn(ddyNeg * kappa * MLXFFT.fftn(uy.asType(.complex64))).realPart()
@@ -620,19 +687,39 @@ private func kspaceFirstOrder3D(
         let massX = nlFactor.map { dtRho0 * duxdx * $0 } ?? (dtRho0 * duxdx)
         let massY = nlFactor.map { dtRho0 * duydy * $0 } ?? (dtRho0 * duydy)
         let massZ = nlFactor.map { dtRho0 * duzdz * $0 } ?? (dtRho0 * duzdz)
-        rhox = pmlX * (pmlX * rhox - massX)
-        if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        rhoy = pmlY * (pmlY * rhoy - massY)
-        if let op = pOpY { rhoy = op.apply(rhoy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-        rhoz = pmlZ * (pmlZ * rhoz - massZ)
-        if let op = pOpZ { rhoz = op.apply(rhoz, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
-
-        // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
+        return [pmlX * (pmlX * rhox - massX), pmlY * (pmlY * rhoy - massY),
+                pmlZ * (pmlZ * rhoz - massZ), duxdx, duydy, duzdz]
+    }
+    // Equation of state: p = c0^2 * (rho + absorption - dispersion + nonlinearity).
+    let eosStep = MLX.compile { (args: [MLXArray]) -> [MLXArray] in
+        let rhox = args[0], rhoy = args[1], rhoz = args[2]
+        let duxdx = args[3], duydy = args[4], duzdz = args[5]
         let rhoTotal = rhox + rhoy + rhoz
         var eosRho = rhoTotal
         if let absorb { eosRho = eosRho + absorb.eosTerm(divU: duxdx + duydy + duzdz, rho: rhoTotal) }
         if let nonlinear { eosRho = eosRho + nonlinear.term(rhoTotal) }
-        p = c2Grid * eosRho
+        return [c2Grid * eosRho]
+    }
+
+    for t in 0..<grid.nt {
+        let uv = velStep([p, ux, uy, uz])
+        ux = uv[0]
+        if let op = uOpX { ux = op.apply(ux, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+        uy = uv[1]
+        if let op = uOpY { uy = op.apply(uy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+        uz = uv[2]
+        if let op = uOpZ { uz = op.apply(uz, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+
+        let rv = rhoStep([ux, uy, uz, rhox, rhoy, rhoz])
+        let duxdx = rv[3], duydy = rv[4], duzdz = rv[5]
+        rhox = rv[0]
+        if let op = pOpX { rhox = op.apply(rhox, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+        rhoy = rv[1]
+        if let op = pOpY { rhoy = op.apply(rhoy, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+        rhoz = rv[2]
+        if let op = pOpZ { rhoz = op.apply(rhoz, t: t, sourceKappa: sourceKappa, fwd: fwd, inv: inv) }
+
+        p = eosStep([rhox, rhoy, rhoz, duxdx, duydy, duzdz])[0]
 
         if t == 0, let f = p0Field {
             p = f
@@ -652,7 +739,7 @@ private func kspaceFirstOrder3D(
                 let uyC = MLXFFT.ifftn(collocY! * MLXFFT.fftn(uy.asType(.complex64))).realPart()
                 let uzC = MLXFFT.ifftn(collocZ! * MLXFFT.fftn(uz.asType(.complex64))).realPart()
                 let sx = sampler.sample(uxC), sy = sampler.sample(uyC), sz = sampler.sample(uzC)
-                MLX.eval(sx, sy, sz)
+                MLX.asyncEval(sx, sy, sz)
                 uxRec.append(sx); uyRec.append(sy); uzRec.append(sz)
             }
         }
@@ -660,7 +747,7 @@ private func kspaceFirstOrder3D(
             monitor(t, p)
         }
         options.progress?(t, grid.nt)
-        MLX.eval(p, ux, uy, uz, rhox, rhoy, rhoz)
+        stepEval(t: t, nt: grid.nt, p, ux, uy, uz, rhox, rhoy, rhoz)
     }
 
     return finalizeRecording(

@@ -34,3 +34,11 @@ jobs:
       - name: Run tests
         # Parity tests XCTSkip when reference .h5 files are absent (untracked).
         run: ./Scripts/test.sh
+
+      - name: Build and smoke-run benchmark harness
+        # Comparison against k-wave-python needs the sibling checkout, so CI only
+        # verifies the Swift bench builds and runs (see Scripts/bench/README.md).
+        run: |
+          xcodebuild build -scheme kwave-bench -destination 'platform=OS X' \
+            -configuration Release -derivedDataPath .build/bench-dd -quiet
+          .build/bench-dd/Build/Products/Release/kwave-bench --repeats 1 --warmup 0 --filter kspace2d_64

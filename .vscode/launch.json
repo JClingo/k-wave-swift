@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:k-wave-swift}",
+            "name": "Debug kwave-bench",
+            "target": "kwave-bench",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug kwave-bench"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:k-wave-swift}",
+            "name": "Release kwave-bench",
+            "target": "kwave-bench",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release kwave-bench"
+        }
+    ]
+}

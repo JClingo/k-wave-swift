@@ -7,7 +7,8 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .library(name: "KWave", targets: ["KWave"])
+        .library(name: "KWave", targets: ["KWave"]),
+        .executable(name: "kwave-bench", targets: ["KWaveBench"])
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.31.3")
@@ -26,6 +27,10 @@ let package = Package(
                 .product(name: "MLXRandom", package: "mlx-swift"),
                 "CHDF5"
             ]
+        ),
+        .executableTarget(
+            name: "KWaveBench",
+            dependencies: ["KWave"]
         ),
         .testTarget(
             name: "KWaveTests",
